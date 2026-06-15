@@ -6,21 +6,27 @@ Cadux to a Hermes Agent server.
 ## High-Level Flow
 
 ```
-┌─────────┐    1. LAN scan     ┌──────────────────┐
-│  Cadux  │ ─────────────────> │   paird daemon    │
-│ (phone) │  GET /discover     │  (port 8643 on   │
-│         │                    │   Hermes host)   │
-│         │   2. POST /start   │                  │
-│         │ <── 3 codes ────  │                  │
-│         │                    │                  │
-│         │   3. Shows codes   │  Web UI shows    │
-│         │   4. User taps one │  live code       │
-│         │   ───────────────> │  highlighted     │
-│         │   POST /confirm    │                  │
-│         │ <── config ─────  │  5. Encrypts     │
-│         │                    │     config with  │
-│         │  6. Auto-connects  │     that code    │
-└─────────┘                    └──────────────────┘
+┌─────────┐    1. LAN scan        ┌──────────────────┐
+│  Cadux  │  ────────────────────> │   paird daemon    │
+│ (phone) │  GET /discover         │  (port 8643 on   │
+│         │                        │   Hermes host)   │
+│         │    2. POST /register   │                  │
+│         │  <── session_id ────  │                  │
+│         │                        │                  │
+│         │  "Ask Hermes to pair"  │                  │
+│         │                        │                  │
+│  User ──┼── "Pair with cadux" ──>│── Hermes AI ──> │
+│         │                        │  3. POST /initiate│
+│         │                        │  <── correct_code│
+│         │                        │                  │
+│         │  4. GET /session/{id}  │                  │
+│         │  <── 6 codes + config ─│                  │
+│         │                        │                  │
+│         │  5. User taps code ───>│  (decrypted      │
+│         │     (local XOR decrypt)│   locally)       │
+│         │                        │                  │
+│         │  6. ✅ Auto-connects   │                  │
+└─────────┘                        └──────────────────┘
 ```
 
 ## Components
@@ -30,23 +36,26 @@ Cadux to a Hermes Agent server.
 An aiohttp web server that runs on the Hermes host. It:
 - Listens on port 8643 (configurable via `PAIRD_PORT`)
 - Serves `GET /discover` for LAN auto-discovery
-- Accepts `POST /start` to create pairing sessions (returns 3 codes)
-- Accepts `POST /confirm/<session>` to verify codes and return encrypted config
-- Serves a web UI at `GET /` showing which code is "live" (highlighted in red)
+- Accepts `POST /register` — Cadux registers intent to pair
+- Accepts `POST /initiate` — **Hermes AI calls this** to trigger pairing
+- Serves `GET /session/{id}` — Cadux polls for session state
+- Serves a web UI at `GET /` showing all pending sessions
 
 ### 2. `src/pairing.py` — The Cadux client
 
 Used by the Cadux app to:
 - `scan(timeout)` — probe the local subnet for paird daemons
 - `PairingSession(url)` — manage a pairing session
-- `session.start()` — get 3 candidate codes
-- `session.confirm(code)` — send user's choice to daemon, decrypt config if correct
+- `session.register()` — register intent to pair
+- `session.poll()` — wait for Hermes to call /initiate
+- `session.try_code(code)` — XOR-decrypt config locally, verify MD5
 
 ### 3. `paird/skills/cadux-pairing/` — The Hermes skill
 
 A Hermes skill that tells the Hermes AI how to:
 - Start/stop/status the paird daemon
-- Help users through the pairing flow
+- Call `POST /initiate` when a user asks to pair
+- Tell the user which code to tap
 
 Includes:
 - `SKILL.md` — Skill definition (YAML frontmatter + markdown docs)
@@ -92,27 +101,26 @@ CADUX_API_URL=http://localhost:8642 CADUX_SECRET_KEY=your-key uv run paird/serve
 
 ## Pairing Flow (End-User View)
 
-1. **Open Cadux** → tap the hamburger menu → "Find Server"
-2. Cadux scans the LAN and finds the Hermes host
-3. **3 tappable code buttons** appear on screen (e.g., `K47`, `X2B`, `M9Q`)
-4. **Server operator** opens `http://<hermes-ip>:8643/` in their browser
-5. Web UI shows one code **highlighted in red** — the operator reads it aloud
-6. **User taps the matching code** on Cadux
-7. ✅ If correct: Cadux shows "Connected!" and auto-configures
-8. ❌ If wrong: Cadux shows "Wrong code — try another"
+1. **Open Cadux** → tap "🔍 Find Server" (banner) or Settings → "Find Server"
+2. Cadux scans the LAN (progress bar visible), discovers paird on port 8643
+3. Cadux registers a session and shows: **"Ask Hermes: Pair with cadux"**
+4. **You tell Hermes** "Pair with cadux" or "My Cadux is waiting"
+5. **Hermes AI calls** `POST /initiate` on paird, gets the correct code back
+6. **Hermes tells you** the code — e.g. "Tap **K47** on your Cadux screen"
+7. **You tap that code** on Cadux → config decrypts locally, connection established
+8. ✅ Cadux shows "Paired!" and the chat UI appears
 
-The human-in-the-loop visual verification is what proves the user is authorized.
-Someone must be able to see **both** the server operator's screen AND the
-Cadux screen to intercept the pairing.
+The human-in-the-loop verification ensures only an authorized person (who can
+talk to both Hermes and Cadux) gets the API key.
 
 ## Security Properties
 
 | Property | How It's Achieved |
 |----------|-------------------|
 | No plaintext API key on wire | XOR + SHA-256 encryption |
-| Visual verification | Live code only visible on server operator's screen |
+| Human verification | Code comes from Hermes AI, user confirms visually |
 | Short-lived sessions | Sessions expire after 120s |
-| No replay | Single-use session, code verified server-side |
+| No replay | Single-use session, codes are one-shot |
 | Familiar UX | Same "confirm on another device" pattern as Microsoft/GitHub |
 
 ## Development
@@ -137,4 +145,4 @@ paird/
 - **mDNS discovery** — supplement LAN scan with Zeroconf/Bonjour for faster discovery
 - **Persistent sessions** — allow re-pairing without re-scanning
 - **TLS support** — optional HTTPS for the daemon
-- **Hermes skill integration** — have the Hermes agent generate one-time pairing URLs on demand
+- **Pairing confirmation callback** — Hermes calls Cadux back after successful pairing
