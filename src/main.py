@@ -78,7 +78,7 @@ def main(page: ft.Page):
                         [
                             ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
                             ft.Text(
-                                "Not configured — open Settings or use a pairing method",
+                                "Not configured — open Settings to connect",
                                 size=13,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                                 expand=True,
@@ -89,9 +89,9 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "🔍 LAN Scan",
-                                icon=ft.Icons.SEARCH,
-                                on_click=lambda e: page.run_task(_pairing_flow, page),
+                                "Settings",
+                                icon=ft.Icons.SETTINGS,
+                                on_click=lambda e: _show_settings_dialog(page),
                                 style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
                             ft.OutlinedButton(
@@ -564,3 +564,4 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
 
 if __name__ == "__main__":
     ft.run(main=main)
+
