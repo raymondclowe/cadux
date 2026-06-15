@@ -17,11 +17,19 @@ import hashlib
 import json
 import logging
 import os
+import random
 import socket
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no I/O/0/1 for readability
+
+
+def generate_code(n: int = 4) -> str:
+    """Generate a short alphanumeric code like 'K47M'."""
+    return "".join(random.choice(_CODE_CHARS) for _ in range(n))
 
 _PAIRD_PORT = int(os.environ.get("PAIRD_PORT", "8643"))
 
@@ -165,12 +173,17 @@ class PairingSession:
             await self._http.close()
             self._http = None
 
-    async def register(self) -> str:
-        """Register pairing intent. Returns session_id."""
+    async def register(self, code: str | None = None) -> str:
+        """Register pairing intent. Returns session_id.
+
+        If *code* is given, the session is registered with that code
+        so it can be claimed via POST /claim on the paird server.
+        """
         await self._ensure_http()
+        body = {"code": code} if code else {}
         async with self._http.post(
             f"{self.daemon_url}/register",
-            json={},
+            json=body,
         ) as resp:
             data = await resp.json()
             self.session_id = data["session_id"]
@@ -236,3 +249,24 @@ class PairingSession:
 
     async def __aexit__(self, *args):
         await self.close()
+
+
+# ── QR-code pairing helpers ─────────────────────────────────────────
+
+
+def decrypt_blob(encrypted_b64: str, code: str) -> dict | None:
+    """Decrypt a config blob obtained from a QR code.
+
+    Args:
+        encrypted_b64: Base64-encoded XOR-encrypted config (from QR scan).
+        code: The decryption code shown on the paird QR page.
+
+    Returns:
+        {api_url, secret_key} on success, or None if the code is wrong
+        or the blob is malformed.
+    """
+    try:
+        decrypted = _decrypt(encrypted_b64.strip(), code.strip())
+        return json.loads(decrypted.decode("utf-8"))
+    except Exception:
+        return None

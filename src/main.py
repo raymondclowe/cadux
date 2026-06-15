@@ -6,6 +6,15 @@ import flet as ft
 
 from src import chat_ui
 from src.config import load_config
+from src.profiles import (
+    load_profiles,
+    get_active_profile,
+    get_active_profile_id,
+    set_active_profile_id,
+    create_profile,
+    delete_profile,
+    Profile,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,8 +26,20 @@ def main(page: ft.Page):
     page.theme = ft.Theme(color_scheme_seed="indigo")
     page.padding = 4
 
-    # ── Config ───────────────────────────────────────────────────────
+    # ── Config: profiles first, then env/session fallback ───────────
     config = load_config(page)
+    active_profile = get_active_profile(page)
+
+    if active_profile is not None:
+        # Profile takes priority over env/session config
+        config = {"api_url": active_profile.api_url, "secret_key": active_profile.secret_key}
+        page.session.store.set("_active_profile", active_profile)
+    elif config is not None:
+        # Env/session config exists but no profile yet — seed a Default profile
+        active_profile = create_profile(page, "Default", config["api_url"], config["secret_key"])
+        set_active_profile_id(page, active_profile.id)
+        page.session.store.set("_active_profile", active_profile)
+
     page.session.store.set("_config", config)
 
     # ── Refs ─────────────────────────────────────────────────────────
@@ -39,7 +60,13 @@ def main(page: ft.Page):
         label="Model",
         expand=True,
     )
-    sessions_list = []
+    sessions_list: list = []
+
+    profile_dropdown = ft.Dropdown(
+        text_size=12,
+        label="Profile",
+        expand=True,
+    )
 
     # ── Unconfigured Banner ──────────────────────────────────────────
     missing_banner = None
@@ -51,7 +78,7 @@ def main(page: ft.Page):
                         [
                             ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
                             ft.Text(
-                                "Not configured — open Settings or auto-discover",
+                                "Not configured — open Settings or use a pairing method",
                                 size=13,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                                 expand=True,
@@ -59,11 +86,22 @@ def main(page: ft.Page):
                         ],
                         spacing=6,
                     ),
-                    ft.ElevatedButton(
-                        "🔍 Find Server",
-                        icon=ft.Icons.SEARCH,
-                        on_click=lambda e: page.run_task(_pairing_flow, page),
-                        style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "🔍 LAN Scan",
+                                icon=ft.Icons.SEARCH,
+                                on_click=lambda e: page.run_task(_pairing_flow, page),
+                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                            ),
+                            ft.OutlinedButton(
+                                "� Code Pair",
+                                icon=ft.Icons.VPN_KEY,
+                                on_click=lambda e: _show_settings_dialog(page),
+                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                            ),
+                        ],
+                        spacing=8,
                     ),
                 ],
                 spacing=6,
@@ -101,7 +139,7 @@ def main(page: ft.Page):
     async def reconnect_fn():
         from src.ws_client import rest_listener
 
-        page.run_task(
+        listener_task = page.run_task(
             rest_listener,
             page,
             chat_column,
@@ -112,6 +150,7 @@ def main(page: ft.Page):
             sessions_list,
             model_dropdown,
         )
+        page.session.store.set("_listener_task", listener_task)
 
     input_area = chat_ui.build_input_area(
         page,
@@ -144,7 +183,11 @@ def main(page: ft.Page):
             ft.IconButton(
                 ft.Icons.SETTINGS,
                 tooltip="Settings",
-                on_click=lambda e: _show_settings_dialog(page, existing_config=config),
+                on_click=lambda e: _show_settings_dialog(
+                    page,
+                    existing_config=config,
+                    edit_profile=page.session.store.get("_active_profile"),
+                ),
             ),
         ],
     )
@@ -175,6 +218,28 @@ def main(page: ft.Page):
 
     session_dropdown.on_change = _drawer_on_session_change
 
+    async def _drawer_on_profile_change(e):
+        new_pid = profile_dropdown.value
+        if new_pid and new_pid != get_active_profile_id(page):
+            await _switch_profile(page, new_pid)
+
+    profile_dropdown.on_change = _drawer_on_profile_change
+
+    def _refresh_profile_dropdown():
+        """Rebuild profile dropdown options from saved profiles."""
+        profiles = load_profiles(page)
+        active_pid = get_active_profile_id(page)
+        profile_dropdown.options.clear()
+        for p in profiles:
+            profile_dropdown.options.append(ft.dropdown.Option(key=p.id, text=p.name))
+        profile_dropdown.value = active_pid if any(p.id == active_pid for p in profiles) else None
+        try:
+            profile_dropdown.update()
+        except Exception:
+            pass
+
+    _refresh_profile_dropdown()
+
     drawer = ft.NavigationDrawer(
         controls=[
             ft.Container(
@@ -186,6 +251,26 @@ def main(page: ft.Page):
                         session_dropdown,
                         ft.Text("Model", size=11, weight=ft.FontWeight.W_500),
                         model_dropdown,
+                        ft.Divider(height=1),
+                        ft.Text("Profile", size=11, weight=ft.FontWeight.W_500),
+                        profile_dropdown,
+                        ft.Row(
+                            [
+                                ft.ElevatedButton(
+                                    "Add",
+                                    icon=ft.Icons.ADD,
+                                    on_click=lambda e: page.run_task(_show_add_profile_dialog, page),
+                                    style=ft.ButtonStyle(text_style=ft.TextStyle(size=11)),
+                                ),
+                                ft.ElevatedButton(
+                                    "Delete",
+                                    icon=ft.Icons.DELETE_OUTLINE,
+                                    on_click=lambda e: page.run_task(_delete_current_profile, page),
+                                    style=ft.ButtonStyle(text_style=ft.TextStyle(size=11)),
+                                ),
+                            ],
+                            spacing=8,
+                        ),
                         ft.Divider(height=1),
                         ft.ElevatedButton(
                             "/help",
@@ -248,7 +333,7 @@ def main(page: ft.Page):
     if config is not None:
         from src.ws_client import rest_listener
 
-        page.run_task(
+        listener_task = page.run_task(
             rest_listener,
             page,
             chat_column,
@@ -259,14 +344,136 @@ def main(page: ft.Page):
             sessions_list,
             model_dropdown,
         )
+        page.session.store.set("_listener_task", listener_task)
 
+    page.update()
+
+
+# ── Profile Management ──────────────────────────────────────────────
+
+
+async def _switch_profile(page, new_pid: str):
+    """Switch to a different profile — cancel current listener, reconnect."""
+    # Save active session back to current profile
+    current_pid = get_active_profile_id(page)
+    current_sid = None
+    try:
+        current_sid = page.session.store.get("active_session_id")
+    except AttributeError:
+        pass
+    if current_pid and current_sid:
+        profiles = load_profiles(page)
+        for p in profiles:
+            if p.id == current_pid:
+                p.active_session_id = current_sid
+                from src.profiles import save_profiles as _sp
+                _sp(page, profiles)
+                break
+
+    # Cancel old listener task
+    old_task = page.session.store.get("_listener_task")
+    if old_task and not old_task.done():
+        old_task.cancel()
+        try:
+            await old_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Switch active profile
+    set_active_profile_id(page, new_pid)
+
+    # Rebuild UI with new profile
+    try:
+        page.clean()
+    except Exception:
+        pass
+    main(page)
+
+
+async def _show_add_profile_dialog(page: ft.Page):
+    """Dialog to add a new profile."""
+    name_field = ft.TextField(label="Profile Name", width=320, hint_text="e.g. Home, Work, Dad")
+    url_field = ft.TextField(label="API URL", width=320, hint_text="http://192.168.0.83:8642")
+    key_field = ft.TextField(
+        label="Secret Key", width=320, password=True, can_reveal_password=True, hint_text="Bearer token"
+    )
+
+    async def _on_add(e):
+        name = name_field.value.strip() or "New Profile"
+        url = url_field.value.strip()
+        key = key_field.value.strip()
+        if not url or not key:
+            return
+        profile = create_profile(page, name, url, key)
+        page.pop_dialog()
+        await _switch_profile(page, profile.id)
+
+    dlg = ft.AlertDialog(
+        title=ft.Text("Add Profile"),
+        content=ft.Column([name_field, url_field, key_field], spacing=10, tight=True),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda e: page.pop_dialog()),
+            ft.TextButton("Save & Switch", on_click=_on_add),
+        ],
+    )
+    page.show_dialog(dlg)
+    page.update()
+
+
+async def _delete_current_profile(page: ft.Page):
+    """Delete the active profile (with confirmation)."""
+    pid = get_active_profile_id(page)
+    if not pid:
+        return
+    profiles = load_profiles(page)
+    target = next((p for p in profiles if p.id == pid), None)
+    if not target:
+        return
+
+    async def _confirm(e):
+        page.pop_dialog()
+
+        # Cancel old listener
+        old_task = page.session.store.get("_listener_task")
+        if old_task and not old_task.done():
+            old_task.cancel()
+            try:
+                await old_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        delete_profile(page, pid)
+
+        # Rebuild — will show missing_banner since no profiles left
+        try:
+            page.clean()
+        except Exception:
+            pass
+        main(page)
+
+    dlg = ft.AlertDialog(
+        title=ft.Text(f'Delete "{target.name}"?'),
+        content=ft.Text("This profile's URL and key will be removed.", size=14),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda e: page.pop_dialog()),
+            ft.TextButton("Delete", on_click=_confirm),
+        ],
+    )
+    page.show_dialog(dlg)
     page.update()
 
 
 # ── Settings Dialog ──────────────────────────────────────────────────
 
 
-def _show_settings_dialog(page, existing_config=None):
+def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None):
+    """Show settings dialog.
+
+    If *edit_profile* is given, the dialog pre-fills fields from that profile
+    and updates it on save instead of creating a new one.
+    """
+    # ── Tab 1: Manual entry ──────────────────────────────────────────
+    profile_name = edit_profile.name if edit_profile else ""
     url_field = ft.TextField(
         label="API URL",
         value=(existing_config or {}).get("api_url", ""),
@@ -281,28 +488,206 @@ def _show_settings_dialog(page, existing_config=None):
         can_reveal_password=True,
         hint_text="Bearer token / API key",
     )
+    name_field = ft.TextField(
+        label="Profile Name",
+        value=profile_name,
+        width=350,
+        hint_text="e.g. Home, Work, Dad",
+    )
 
     def _on_save(e):
         url = url_field.value.strip()
         key = key_field.value.strip()
+        name = name_field.value.strip() or "Default"
         if url and key:
-            try:
-                page.session.store.set("api_url", url)
-                page.session.store.set("secret_key", key)
-            except AttributeError:
-                pass
-            page.pop_dialog()
-            # Clean and re-initialise so the listener starts
-            page.clean()
-            main(page)
+            _save_config(page, url, key, name, edit_profile=edit_profile)
+
+    manual_tab = ft.Column(
+        [name_field, url_field, key_field],
+        spacing=12,
+        tight=True,
+    )
+
+    # ── Tab 2: Code pairing (phone shows code, tell Hermes) ────────
+    pairing_code_text = ft.Text(
+        "----",
+        size=36,
+        weight=ft.FontWeight.BOLD,
+        text_align=ft.TextAlign.CENTER,
+        color=ft.Colors.PRIMARY,
+        letter_spacing=8,
+    )
+    pairing_status_text = ft.Text("", size=13, text_align=ft.TextAlign.CENTER)
+    pairing_spinner = ft.ProgressRing(width=24, height=24, visible=False)
+    pairing_start_btn = ft.ElevatedButton(
+        "🔑 Start Code Pairing",
+        icon=ft.Icons.VPN_KEY,
+        style=ft.ButtonStyle(text_style=ft.TextStyle(size=13)),
+    )
+    pairing_cancel_btn = ft.TextButton("Cancel", visible=False)
+
+    async def _start_code_pairing(e):
+        from src import pairing
+
+        code = pairing.generate_code()
+        pairing_code_text.value = code
+        pairing_status_text.value = "Tell Hermes: 'Pair with cadux, code " + code + "'"
+        pairing_status_text.color = ft.Colors.ON_SURFACE_VARIANT
+        pairing_spinner.visible = True
+        pairing_start_btn.disabled = True
+        pairing_cancel_btn.visible = True
+        page.update()
+
+        try:
+            pair_url = url_field.value.strip()
+            if not pair_url:
+                # fallback: use API URL with port 8643
+                api = url_field.value.strip()
+                if api and ":" in api:
+                    import re
+                    host = re.sub(r":\d+$", ":8643", api)
+                    pair_url = host
+                if not pair_url:
+                    pairing_status_text.value = "❌ Enter API URL first"
+                    pairing_status_text.color = ft.Colors.ERROR
+                    return
+
+            session = pairing.PairingSession(pair_url)
+            sid = await session.register(code=code)
+            logger.info("Code pairing: session=%s code=%s", sid[:8], code)
+
+            # Poll
+            result = await session.poll(timeout=120.0, interval=1.5)
+            if result is None:
+                pairing_status_text.value = "❌ Timed out — try again"
+                pairing_status_text.color = ft.Colors.ERROR
+                await session.close()
+                return
+
+            config = session.try_code(code)
+            if config:
+                pairing_status_text.value = "✅ Paired! Connecting…"
+                pairing_status_text.color = ft.Colors.PRIMARY
+                page.update()
+                await asyncio.sleep(0.5)
+                _save_config(page, config["api_url"], config["secret_key"])
+            else:
+                pairing_status_text.value = "❌ Decryption failed"
+                pairing_status_text.color = ft.Colors.ERROR
+            await session.close()
+        except Exception as exc:
+            logger.error("Code pairing failed: %s", exc)
+            pairing_status_text.value = f"❌ {exc}"
+            pairing_status_text.color = ft.Colors.ERROR
+        finally:
+            pairing_spinner.visible = False
+            pairing_start_btn.disabled = False
+            pairing_cancel_btn.visible = False
+            page.update()
+
+    def _cancel_pairing_action(e):
+        pairing_spinner.visible = False
+        pairing_start_btn.disabled = False
+        pairing_cancel_btn.visible = False
+        pairing_status_text.value = "Cancelled"
+        pairing_status_text.color = ft.Colors.OUTLINE
+        pairing_code_text.value = "----"
+        page.update()
+
+    pairing_start_btn.on_click = lambda e: page.run_task(_start_code_pairing, e)
+    pairing_cancel_btn.on_click = _cancel_pairing_action
+
+    qr_tab = ft.Column(
+        [
+            ft.Text(
+                "Pair without typing on your phone:",
+                size=13,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+            ft.Text(
+                "1. Tap Start — a code appears below\n"
+                "2. Tell Hermes: 'Pair with cadux, code XXXX'\n"
+                "3. Hermes handles the rest — you're connected!",
+                size=12,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+            ft.Container(
+                content=ft.Column(
+                    [
+                        pairing_code_text,
+                        ft.Row(
+                            [pairing_spinner, pairing_status_text],
+                            spacing=6,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                    ],
+                    spacing=4,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                ),
+                bgcolor=ft.Colors.SURFACE_CONTAINER,
+                border_radius=12,
+                padding=ft.padding.Padding.symmetric(horizontal=20, vertical=16),
+            ),
+            ft.Row(
+                [pairing_start_btn, pairing_cancel_btn],
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+        ],
+        spacing=10,
+        tight=True,
+    )
+
+    # ── Tab switcher (simple button toggle, no ft.Tabs API) ───────
+    # Flet 0.85.3 Tabs requires 'content'+'length' constructor args
+    # and Tab uses 'label' not 'text' — so use a button toggle instead.
+    tab_index = {"value": 0}
+    manual_container = ft.Container(content=manual_tab, visible=True)
+    qr_container = ft.Container(content=qr_tab, visible=False)
+
+    def _switch_tab(idx):
+        tab_index["value"] = idx
+        manual_container.visible = idx == 0
+        qr_container.visible = idx == 1
+        manual_container.update()
+        qr_container.update()
+        manual_tab_btn.style = _tab_btn_style(True) if idx == 0 else _tab_btn_style(False)
+        qr_tab_btn.style = _tab_btn_style(True) if idx == 1 else _tab_btn_style(False)
+        manual_tab_btn.update()
+        qr_tab_btn.update()
+
+    def _tab_btn_style(active):
+        if active:
+            return ft.ButtonStyle(
+                bgcolor=ft.Colors.PRIMARY,
+                color=ft.Colors.ON_PRIMARY,
+                text_style=ft.TextStyle(size=13),
+            )
+        return ft.ButtonStyle(
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            text_style=ft.TextStyle(size=13),
+        )
+
+    manual_tab_btn = ft.ElevatedButton(
+        "Manual", on_click=lambda e: _switch_tab(0), style=_tab_btn_style(True)
+    )
+    qr_tab_btn = ft.ElevatedButton(
+        "Code Pair", on_click=lambda e: _switch_tab(1), style=_tab_btn_style(False)
+    )
+    tab_buttons = ft.Row(
+        [manual_tab_btn, qr_tab_btn], spacing=6, alignment=ft.MainAxisAlignment.CENTER
+    )
+    tab_content = ft.Column(
+        [tab_buttons, manual_container, qr_container],
+        spacing=10,
+        tight=True,
+    )
 
     dialog = ft.AlertDialog(
         title=ft.Text("Cadux Settings"),
-        content=ft.Column(
-            [url_field, key_field],
-            spacing=12,
-            tight=True,
-        ),
+        content=tab_content,
         actions=[
             ft.TextButton("Find Server", on_click=lambda e: page.run_task(_pairing_flow, page)),
             ft.TextButton("Save", on_click=_on_save),
@@ -310,6 +695,46 @@ def _show_settings_dialog(page, existing_config=None):
     )
 
     page.show_dialog(dialog)
+
+
+def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edit_profile: Profile = None):
+    """Save config (as a profile) and restart the UI with connection active."""
+    if edit_profile is not None:
+        # Update existing profile
+        edit_profile.api_url = api_url
+        edit_profile.secret_key = secret_key
+        edit_profile.name = name
+        from src.profiles import update_profile as _up
+
+        _up(page, edit_profile)
+        set_active_profile_id(page, edit_profile.id)
+    else:
+        # Create new profile
+        profiles = load_profiles(page)
+        # Check if same URL already exists
+        existing = next((p for p in profiles if p.api_url.rstrip("/") == api_url.rstrip("/")), None)
+        if existing:
+            existing.secret_key = secret_key
+            existing.name = name
+            from src.profiles import update_profile as _up
+
+            _up(page, existing)
+            set_active_profile_id(page, existing.id)
+        else:
+            profile = create_profile(page, name, api_url, secret_key)
+            set_active_profile_id(page, profile.id)
+
+    try:
+        page.session.store.set("api_url", api_url)
+        page.session.store.set("secret_key", secret_key)
+    except AttributeError:
+        pass
+    try:
+        page.pop_dialog()
+    except Exception:
+        pass
+    page.clean()
+    main(page)
 
 
 # ── Auto-Pairing Flow ────────────────────────────────────────────────
@@ -373,14 +798,12 @@ async def _pairing_flow(page: ft.Page):
 
     # ── Phase 2: register with paird (try servers in order) ─────────
     session = None
-    daemon_url = None
     for srv in servers:
         url = srv["url"]
         try:
             candidate = PairingSession(url)
             await candidate.register()
             session = candidate
-            daemon_url = url
             logger.info("Registered with paird at %s", url)
             break
         except ContentTypeError:
@@ -451,8 +874,6 @@ async def _pairing_flow(page: ft.Page):
         text_align=ft.TextAlign.CENTER,
     )
     result_text = ft.Text("", size=14, text_align=ft.TextAlign.CENTER)
-    # Wrong-code flash state
-    wrong_container = ft.Container()  # placeholder, replaced below
 
     async def _on_tap_code(code):
         """User tapped a code — try decrypt locally with MD5 check."""
@@ -466,12 +887,18 @@ async def _pairing_flow(page: ft.Page):
             page.update()
             await asyncio.sleep(0.6)
 
-            # Save config
+            # Save config + create profile
             try:
                 page.session.store.set("api_url", config["api_url"])
                 page.session.store.set("secret_key", config["secret_key"])
             except AttributeError:
                 pass
+
+            # Create a profile if none exists yet
+            active_p = get_active_profile(page)
+            if active_p is None:
+                profile = create_profile(page, "From Pairing", config["api_url"], config["secret_key"])
+                set_active_profile_id(page, profile.id)
 
             page.pop_dialog()
             await session.close()

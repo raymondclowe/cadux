@@ -13,15 +13,22 @@ metadata:
 
 # Cadux Pairing Skill
 
-Provides a **zero-typing LAN pairing flow** between a Hermes server and the
+Provides a **zero-typing pairing flow** between a Hermes server and the
 Cadux mobile/desktop client. No QR codes, no long API keys to type on a phone.
 
-## What This Solves
+## Two Pairing Methods
 
-Cadux is a Flet-based chat frontend for Hermes Agent. When you run Cadux on
-your phone or another machine and want to connect it to this Hermes server,
-you normally need to type the API URL and secret key by hand — hard on a phone
-keyboard. This skill replaces that with a **6-code tap-to-pair** flow:
+### Method A: Code Pairing (recommended — simplest)
+
+The primary flow: Cadux shows a 4-character code, the user tells you the code,
+you pass it to `/initiate`, and Cadux auto-connects.
+
+1. User opens Cadux → taps "Start Code Pairing" → sees code like **K47M**
+2. User tells you (Hermes): "Pair with cadux, code K47M"
+3. **You call POST /initiate with the code** → paird encrypts config, marks ready
+4. Cadux polls, decrypts, connects — the user sees "✅ Paired!"
+
+### Method B: 6-Code LAN Scan (original flow)
 
 1. Cadux scans the LAN and discovers paird on the Hermes host
 2. Cadux registers a pairing session and shows "Ask Hermes to pair"
@@ -110,7 +117,7 @@ python3 $PAIRD_MGR restart
 ## API — Hermes-initiated Pairing Flow (YOU call /initiate)
 
 When a Cadux user asks to pair, **YOU** are responsible for calling the `/initiate`
-endpoint on paird. This is the Hermes-in-the-loop step.
+endpoint on paird.
 
 ### Endpoint
 
@@ -118,16 +125,66 @@ endpoint on paird. This is the Hermes-in-the-loop step.
 POST http://localhost:8643/initiate
 ```
 
-No request body needed. Response:
+### Code Pairing (Method A — use when user gives you a code)
 
-```json
-{
-  "correct_code": "K47",
-  "session_id": "a1b2c3d4-..."
-}
+If the user says "Pair with cadux, code K47M", pass the code in the body:
+
+```bash
+curl -X POST http://localhost:8643/initiate \
+  -H "Content-Type: application/json" \
+  -d '{"code": "K47M"}'
 ```
 
-### Full Pairing Flow (step by step)
+Response:
+```json
+{"correct_code": "K47M", "session_id": "a1b2c3d4-...", "status": "ready"}
+```
+
+Cadux will auto-detect and connect — no further action needed. Tell the user
+"Paired — check your Cadux screen" and you're done.
+
+### 6-Code Mode (Method B — no code provided)
+
+If the user just says "Pair with cadux" without a code:
+
+```bash
+curl -X POST http://localhost:8643/initiate
+```
+
+Response:
+```json
+{"correct_code": "K47", "session_id": "a1b2c3d4-..."}
+```
+
+**Tell the user the code** — say: "Tap the code **K47** on your Cadux screen"
+
+### Code Pairing Flow (Method A — step by step)
+
+This is the simplest path. Use this whenever the user gives you a code.
+
+1. **User opens Cadux → "Code Pair" tab → taps "Start Code Pairing"**  
+   Cadux shows a 4-char code like **K47M** and says "Tell Hermes: Pair with cadux, code K47M"
+
+2. **User tells you the code**  
+   "Pair with cadux, code K47M"
+
+3. **You start paird if needed:**
+   ```bash
+   python3 $PAIRD_MGR start
+   ```
+
+4. **You call POST /initiate with the code:**
+   ```bash
+   curl -X POST http://localhost:8643/initiate \
+     -H "Content-Type: application/json" \
+     -d '{"code": "K47M"}'
+   ```
+   → paird encrypts config, marks session ready
+
+5. **Cadux auto-detects and connects** — no further steps.  
+   Tell the user: "✅ Done — check your Cadux screen"
+
+### 6-Code LAN Flow (Method B — step by step)
 
 1. **User opens Cadux and taps "Find Server"**  
    Cadux scans the LAN and discovers paird. It registers a session and shows:
@@ -136,12 +193,12 @@ No request body needed. Response:
 2. **User asks you to pair**  
    They say something like: "Pair with cadux" or "My Cadux is waiting"
 
-3. **You start paird if needed** (it may already be running):
+3. **You start paird if needed:**
    ```bash
    python3 $PAIRD_MGR start
    ```
 
-4. **You call POST /initiate**:
+4. **You call POST /initiate:**
    ```bash
    curl -X POST http://localhost:8643/initiate
    ```
@@ -156,15 +213,16 @@ No request body needed. Response:
 6. **User taps the code** → Cadux decrypts the config locally and connects.  
    You'll see in paird logs:
    ```
-   Initiated — session a1b2c3d4 codes=['K47', ...] (correct: K47)
+   Initiated (6-code mode) — session a1b2c3d4 codes=['K47', ...] (correct: K47)
    ```
 
 7. **Confirm** — the user should see "✅ Paired!" on Cadux, and the chat UI appears.
 
 ### Important Notes
 
-- The `/initiate` endpoint pairs with the **most recent waiting** session.
-- If no session is waiting, you'll get `{"error": "No pending pairing request. Open Cadux first."}` with HTTP 404.
+- **Code-pairing mode** (`/initiate` with `{"code": "K47M"}`): finds the session with that exact code. Used when the user gives you a code.
+- **6-code mode** (`/initiate` with no body): pairs with the **most recent waiting** session. Used for LAN scan flow.
+- If no session is waiting, you'll get `{"error": "No pending pairing request..."}` with HTTP 404.
 - Sessions expire after 120 seconds.
 
 ## Troubleshooting
@@ -184,8 +242,8 @@ CADUX_API_URL=http://localhost:8642 CADUX_SECRET_KEY=your-key python3 $PAIRD_MGR
 **Cadux can't find the server:**
 Make sure port 8643 is accessible from the client device (no firewall blocking).
 
-**/initiate returns "No pending pairing request":**
-The user hasn't tapped "Find Server" on Cadux yet, or the session expired (120s TTL).
+**/initiate returns "No waiting session with code":**
+The code doesn't match. Ask the user to read the code again — or have them restart Code Pairing in Cadux.
 
 **Wrong code tapped:**
 Cadux shows "Wrong code — try another". The user needs the code from `/initiate`.
