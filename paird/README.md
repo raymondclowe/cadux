@@ -6,20 +6,25 @@ Flet-based chat frontend for Hermes Agent.
 ## Architecture
 
 ```
-┌──────────────┐     LAN scan      ┌──────────────────┐
-│              │  ───────────────>  │                  │
-│   Cadux      │  GET /discover    │   paird daemon   │
-│   (phone/    │                   │   (port 8643)    │
-│    desktop)  │  POST /start      │                  │
-│              │  <── 3 codes ───  │   Hermes Server  │
-│              │                   │                  │
-│   User taps  │  POST /confirm    │   Encrypts       │
-│   a code     │  <── config ────  │   config + sends │
-└──────────────┘                   └──────────────────┘
-                                           │
-                                    Server operator opens
-                                    http://<ip>:8643/
-                                    and reads live code
+┌──────────────┐     LAN scan        ┌──────────────────┐
+│              │  ──────────────────> │                  │
+│   Cadux      │  GET /discover       │   paird daemon   │
+│   (phone/    │                      │   (port 8643)    │
+│    desktop)  │  POST /register      │                  │
+│              │  <── session_id ─── │   Hermes AI      │
+│              │                      │   calls          │
+│   User says  │  ──"Pair with ─────> │   POST /initiate │
+│   "Pair..."  │     cadux"           │   ──> returns    │
+│              │                      │   correct_code   │
+│   Cadux      │  GET /session/{id}   │                  │
+│   polls      │  <── 6 codes + cfg ─ │                  │
+│              │                      │                  │
+│   User taps  │  (decrypts locally)  │                  │
+│   the code   │  ✅ Connects         │                  │
+└──────────────┘                      └──────────────────┘
+                                               │
+                                        Hermes AI tells
+                                        user the code
 ```
 
 ## Files
@@ -68,36 +73,56 @@ python3 ~/.hermes/skills/cadux-pairing/scripts/paird_manager.py start
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Web UI — shows live pairing codes |
+| GET | `/` | Web UI — shows all active pairing sessions |
 | GET | `/discover` | JSON identity (LAN auto-discovery) |
-| POST | `/start` | Create pairing session → returns 3 codes + session ID |
-| POST | `/confirm/<session>` | Verify a code → returns encrypted config or 403 |
+| POST | `/register` | Cadux registers intent to pair → `{session_id}` |
+| POST | `/initiate` | **Hermes AI calls this** → generates 6 codes, encrypts config → `{correct_code}` |
+| GET | `/session/{id}` | Cadux polls for status → `{status, codes, config_encrypted, md5_sig}` |
 
-### POST /start
+### POST /register
 
 Response:
 ```json
 {
-  "codes": ["K47", "X2B", "M9Q"],
-  "session": "a1b2c3d4-..."
+  "session_id": "a1b2c3d4-...",
+  "status": "waiting"
 }
 ```
 
-### POST /confirm/:session
+### POST /initiate
 
-Request body:
+No request body needed. Pairs with the most recent waiting session.
+
+Response:
 ```json
-{ "code": "K47" }
+{
+  "correct_code": "K47",
+  "session_id": "a1b2c3d4-..."
+}
 ```
 
-Success (200):
+Error (no pending session):
 ```json
-{ "config_encrypted": "<base64>" }
+{"error": "No pending pairing request. Open Cadux first."}
+```
+Status: 404
+
+### GET /session/{id}
+
+While waiting:
+```json
+{"status": "waiting"}
 ```
 
-Wrong code (403):
+When ready (Hermes has called /initiate):
 ```json
-{ "error": "wrong code" }
+{
+  "status": "ready",
+  "codes": ["K47", "X2B", "M9Q", ...],
+  "config_encrypted": "<base64>",
+  "md5_sig": "<md5-of-plaintext>"
+}
+```
 ```
 
 Session expired (404):
