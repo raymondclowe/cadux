@@ -79,7 +79,52 @@ def _find_hermes_config():
                 except OSError:
                     pass
 
-    # 3. Hermes config.yaml
+    # 3. Hermes gateway service env vars (API_SERVER_HOST/PORT/KEY)
+    #    These are set by Hermes_Gateway.cmd / Hermes_Gateway.sh at launch.
+    if not api_url or not secret_key:
+        host = os.environ.get("API_SERVER_HOST") or "127.0.0.1"
+        port = os.environ.get("API_SERVER_PORT") or "8642"
+        key = os.environ.get("API_SERVER_KEY")
+        if key and not secret_key:
+            secret_key = key
+        if not api_url:
+            api_url = f"http://{host}:{port}"
+
+    # 4. Hermes gateway .cmd/.sh file (hardcoded env vars)
+    if not api_url or not secret_key:
+        gateway_candidates = [
+            os.path.join(HERMES_HOME, "gateway-service", "Hermes_Gateway.cmd"),
+            os.path.join(HERMES_HOME, "gateway-service", "Hermes_Gateway.sh"),
+        ]
+        for gw_path in gateway_candidates:
+            if os.path.exists(gw_path):
+                try:
+                    with open(gw_path, encoding="utf-8", errors="replace") as f:
+                        gw_key = None
+                        gw_host = None
+                        gw_port = None
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("set "):
+                                parts = line[4:].split("=", 1)
+                                if len(parts) == 2:
+                                    k, v = parts[0].strip(), parts[1].strip()
+                                    if k == "API_SERVER_KEY" and not gw_key:
+                                        gw_key = v
+                                    elif k == "API_SERVER_HOST" and not gw_host:
+                                        gw_host = v
+                                    elif k == "API_SERVER_PORT" and not gw_port:
+                                        gw_port = v
+                        if gw_key and not secret_key:
+                            secret_key = gw_key
+                        if not api_url:
+                            gw_host = gw_host or "127.0.0.1"
+                            gw_port = gw_port or "8642"
+                            api_url = f"http://{gw_host}:{gw_port}"
+                except OSError:
+                    pass
+
+    # 5. Hermes config.yaml
     if not api_url or not secret_key:
         config_yaml = os.path.join(HERMES_HOME, "config.yaml")
         if os.path.exists(config_yaml):
