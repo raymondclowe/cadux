@@ -430,7 +430,11 @@ async def _pairing_flow(page: ft.Page):
     page.update()
 
     # ── Phase 4: poll until Hermes initiates ─────────────────────────
-    result = await session.poll(timeout=120.0)
+    try:
+        result = await session.poll(timeout=120.0)
+    except Exception as exc:
+        logger.error("Poll failed: %s", exc)
+        result = None
     if result is None:
         page.pop_dialog()
         _show_error_dialog(page, "Timed out waiting for Hermes.\nSay \"Pair with cadux\" and try again.")
