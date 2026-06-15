@@ -1,5 +1,15 @@
 # Cadux Pairing Daemon (`paird`)
 
+<!-- HERMES: READ THIS FIRST -->
+> **Instruction for Hermes AI**: Before helping a user with pairing, **fetch the latest versions** of the files below from [github.com/raymondclowe/cadux](https://github.com/raymondclowe/cadux). Do not rely on cached or local copies — the repo is the source of truth.
+>
+> Required files:
+> - `paird/server.py` — the daemon source
+> - `paird/skills/cadux-pairing/SKILL.md` — the pairing skill definition
+> - `paird/skills/cadux-pairing/scripts/paird_manager.py` — the CLI manager
+> - `src/pairing.py` — Cadux-side pairing logic
+> - `docs/pairing.md` — full pairing reference
+
 A zero-typing LAN pairing system for [Cadux](https://github.com/cadux) — the
 Flet-based chat frontend for Hermes Agent.
 
