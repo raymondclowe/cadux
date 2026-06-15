@@ -1,13 +1,14 @@
 """
 Cadux pairing client — auto-discover and pair with Hermes on the LAN.
 
-Flow:
-  1. ``scan()`` — probe the local subnet for pairing daemons (port 8643)
-  2. ``PairingSession(url).start()`` — request a session; returns 3 codes
-  3. Cadux shows the 3 codes to the user
-  4. User taps one → ``session.confirm(code)`` POSTs to daemon
-  5. If correct → daemon encrypts config with that code, client decrypts
-  6. If wrong → daemon returns 403, client gets ``None``
+Flow (v2, Hermes-initiated):
+  1. ``scan()`` — probe local subnet for pairing daemons
+  2. ``PairingSession(url).register()`` — register intent; returns session_id
+  3. User tells Hermes "Pair with cadux" → Hermes calls paird /initiate
+  4. ``session.poll()`` — blocking poll until Hermes initiates (every 2s, 120s max)
+  5. Returns {codes, config_encrypted, md5_sig}
+  6. ``session.try_code(code)`` — XOR-decrypt config, verify MD5
+  7. Returns config dict on success, None on wrong code
 """
 
 import asyncio
@@ -95,20 +96,22 @@ async def scan(timeout: float = 3.0, port: int | None = None) -> list[dict]:
     return found
 
 
-# ── Pairing session ──────────────────────────────────────────────────
+# ── Pairing session (v2: Hermes-initiated) ──────────────────────────
 
 
 class PairingSession:
-    """Manages a pairing session with a discovered daemon.
+    """Manages a pairing session with Hermes-initiated flow.
 
     Usage::
 
         session = PairingSession("http://192.168.0.83:8643")
-        codes = await session.start()            # [3 codes]
-        # … show codes, user picks one …
-        config = await session.confirm(picked)   # POST /confirm -> decrypt
+        sid = await session.register()               # step 1: register
+        # user says "Pair with cadux" to Hermes ...
+        result = await session.poll()                # step 2: poll until ready
+        # 6 codes shown on screen, user taps one ...
+        config = session.try_code("ABC")             # step 3: decrypt + verify
         if config:
-            # correct code! config ready to apply
+            # paired!
         else:
             # wrong code
     """
@@ -116,59 +119,85 @@ class PairingSession:
     def __init__(self, daemon_url: str):
         self.daemon_url = daemon_url.rstrip("/")
         self.session_id: str | None = None
-        self.codes: list[str] = []
         self._http: aiohttp.ClientSession | None = None
+        self._codes: list[str] = []
+        self._config_encrypted: str | None = None
+        self._md5_sig: str | None = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def _ensure_http(self):
         if self._http is None:
             self._http = aiohttp.ClientSession()
-        return self._http
-
-    async def start(self) -> list[str]:
-        """Start a new pairing session. Returns the 3 candidate codes."""
-        http = await self._get_session()
-        async with http.post(f"{self.daemon_url}/start") as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"paird /start returned {resp.status}")
-            data = await resp.json()
-        self.codes = data["codes"]
-        self.session_id = data.get("session")  # for confirm endpoint
-        logger.info("Pairing started — session=%s, codes: %s", self.session_id[:8] if self.session_id else "?", self.codes)
-        return self.codes
-
-    async def confirm(self, code: str) -> dict | None:
-        """Send *code* to daemon for confirmation.
-
-        If the server says it's correct, we receive the encrypted config
-        and decrypt it locally. Returns the config dict, or ``None`` if
-        the code was wrong.
-        """
-        http = await self._get_session()
-        try:
-            async with http.post(
-                f"{self.daemon_url}/confirm/{self.session_id}",
-                json={"code": code},
-            ) as resp:
-                if resp.status == 403:
-                    return None  # wrong code
-                if resp.status == 404:
-                    raise RuntimeError("Pairing session expired")
-                if resp.status != 200:
-                    raise RuntimeError(f"confirm returned {resp.status}")
-                data = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            raise RuntimeError(f"Network error during confirm: {e}")
-
-        encrypted = data["config_encrypted"]
-        raw = _decrypt(encrypted, code)
-        config = json.loads(raw)
-        logger.info("Code confirmed! Config — API: %s", config.get("api_url"))
-        return config
 
     async def close(self):
         if self._http:
             await self._http.close()
             self._http = None
+
+    async def register(self) -> str:
+        """Register pairing intent. Returns session_id."""
+        await self._ensure_http()
+        async with self._http.post(
+            f"{self.daemon_url}/register",
+            json={},
+        ) as resp:
+            data = await resp.json()
+            self.session_id = data["session_id"]
+            logger.info("Registered session %s", self.session_id[:8])
+            return self.session_id
+
+    async def poll(self, timeout: float = 120.0, interval: float = 2.0) -> dict | None:
+        """Poll until Hermes initiates pairing.
+
+        Returns {codes, config_encrypted, md5_sig} or None on timeout.
+        """
+        if not self.session_id:
+            raise RuntimeError("Call register() first")
+
+        await self._ensure_http()
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        while asyncio.get_event_loop().time() < deadline:
+            async with self._http.get(
+                f"{self.daemon_url}/session/{self.session_id}"
+            ) as resp:
+                if resp.status != 200:
+                    await asyncio.sleep(interval)
+                    continue
+                data = await resp.json()
+                if data.get("status") == "ready":
+                    self._codes = data["codes"]
+                    self._config_encrypted = data["config_encrypted"]
+                    self._md5_sig = data["md5_sig"]
+                    return {
+                        "codes": data["codes"],
+                        "config_encrypted": data["config_encrypted"],
+                        "md5_sig": data["md5_sig"],
+                    }
+            await asyncio.sleep(interval)
+
+        logger.warning("Poll timed out after %ds", timeout)
+        return None
+
+    @property
+    def codes(self) -> list[str]:
+        """The 6 codes (only available after poll() returns)."""
+        return self._codes
+
+    def try_code(self, code: str) -> dict | None:
+        """Try a code: XOR-decrypt config, verify MD5.
+
+        Returns config dict {api_url, secret_key}, or None if wrong code.
+        """
+        if not self._config_encrypted or not self._md5_sig:
+            raise RuntimeError("Call poll() first to get encrypted data")
+
+        decrypted = _decrypt(self._config_encrypted, code)
+        md5 = hashlib.md5(decrypted).hexdigest()
+
+        if md5 != self._md5_sig:
+            return None
+
+        return json.loads(decrypted.decode("utf-8"))
 
     async def __aenter__(self):
         return self

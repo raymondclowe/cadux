@@ -236,6 +236,38 @@ def cmd_start(args) -> str:
     })
 
 
+def cmd_initiate(args) -> str:
+    """Tell paird to initiate pairing now (Hermes has approved).
+    Calls POST /initiate on the daemon and returns the correct code.
+    """
+    port = args.port or DEFAULT_PORT
+    # Find the paird daemon URL
+    paird_url = f"http://127.0.0.1:{port}"
+    try:
+        req = urllib.request.Request(
+            f"{paird_url}/initiate",
+            method="POST",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5.0)
+        data = json.loads(resp.read().decode())
+        return json.dumps({
+            "status": "success",
+            "correct_code": data["correct_code"],
+            "session_id": data.get("session_id"),
+        })
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        try:
+            err_data = json.loads(body)
+            return json.dumps({"status": "error", "error": err_data.get("error", body)})
+        except json.JSONDecodeError:
+            return json.dumps({"status": "error", "error": body})
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+
 def cmd_stop(args) -> str:
     """Stop the running paird daemon."""
     if not os.path.exists(PID_FILE):
@@ -293,7 +325,7 @@ def _check_health(port: int) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Cadux Pairing Daemon Manager")
-    parser.add_argument("command", choices=["start", "stop", "restart", "status"])
+    parser.add_argument("command", choices=["start", "stop", "restart", "status", "initiate"])
     parser.add_argument("--port", type=int, default=None, help="Port for paird (default: 8643)")
     args = parser.parse_args()
 
@@ -303,6 +335,8 @@ def main():
         output = cmd_start(args)
     elif args.command == "stop":
         output = cmd_stop(args)
+    elif args.command == "initiate":
+        output = cmd_initiate(args)
     elif args.command == "restart":
         stop_out = cmd_stop(args)
         start_out = cmd_start(args)
