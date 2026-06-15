@@ -205,7 +205,7 @@ def cmd_start(args) -> str:
             stdout=open(LOG_FILE, "a"),
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
             start_new_session=True,
         )
     except Exception as e:
