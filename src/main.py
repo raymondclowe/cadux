@@ -369,15 +369,37 @@ async def _pairing_flow(page: ft.Page):
             _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
         return
 
-    daemon_url = servers[0]["url"]
+    from aiohttp import ContentTypeError
 
-    # ── Phase 2: register with paird ─────────────────────────────────
-    session = PairingSession(daemon_url)
-    try:
-        await session.register()
-    except Exception as e:
+    # ── Phase 2: register with paird (try servers in order) ─────────
+    session = None
+    daemon_url = None
+    for srv in servers:
+        url = srv["url"]
+        try:
+            candidate = PairingSession(url)
+            await candidate.register()
+            session = candidate
+            daemon_url = url
+            logger.info("Registered with paird at %s", url)
+            break
+        except ContentTypeError:
+            logger.warning("Server %s doesn't support /register (old paird?)", url)
+            await candidate.close()
+            continue
+        except Exception as e:
+            logger.warning("Failed to register with %s: %s", url, e)
+            await candidate.close()
+            continue
+
+    if session is None:
         page.pop_dialog()
-        _show_error_dialog(page, f"Failed to register:\n{e}")
+        _show_error_dialog(
+            page,
+            "Found paird servers but none accepted registration.\n"
+            "Make sure paird is up-to-date (v2) on the Hermes host.\n"
+            "Run: git pull && uv run paird/server.py",
+        )
         return
 
     # ── Phase 3: show "waiting for Hermes" spinner ───────────────────

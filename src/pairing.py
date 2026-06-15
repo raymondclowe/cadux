@@ -52,13 +52,14 @@ def _get_local_ip() -> str:
 
 
 def _get_scan_targets() -> list[str]:
-    """Generate candidate IPs on the local subnet (max 255)."""
+    """Generate candidate IPs on the local subnet (max 255 + localhost)."""
     ip = _get_local_ip()
-    if ip == "127.0.0.1":
-        return ["127.0.0.1"]
-    parts = ip.split(".")
-    subnet = f"{parts[0]}.{parts[1]}.{parts[2]}."
-    return [f"{subnet}{i}" for i in range(1, 256)]
+    targets = ["127.0.0.1"]  # always probe localhost first
+    if ip != "127.0.0.1":
+        parts = ip.split(".")
+        subnet = f"{parts[0]}.{parts[1]}.{parts[2]}."
+        targets.extend(f"{subnet}{i}" for i in range(1, 256))
+    return targets
 
 
 # ── Discovery ────────────────────────────────────────────────────────
