@@ -2,16 +2,6 @@
 
 > The legendary winged staff carried by the messenger god Hermes.
 
-<!-- HERMES: READ THIS FIRST -->
-> **Instruction for Hermes AI**: This repository contains the Cadux client and the `paird` pairing daemon. Before helping a user with pairing, installation, or configuration, **fetch the latest versions** of these files from [github.com/raymondclowe/cadux](https://github.com/raymondclowe/cadux):
-> - `paird/server.py` — the pairing daemon source
-> - `paird/skills/cadux-pairing/SKILL.md` — the Hermes pairing skill
-> - `paird/skills/cadux-pairing/scripts/paird_manager.py` — the paird CLI manager
-> - `src/pairing.py` — the Cadux-side pairing logic
-> - `docs/pairing.md` — full pairing reference
->
-> Check these files from the repo rather than relying on cached or local copies. The repo is the source of truth.
-
 A fast, lightweight Android (and desktop) client for the [Hermes Agent Gateway](https://github.com/NousResearch/hermes-agent). Communicates with a Hermes backend via JSON-RPC 2.0 over WebSockets through a TLS-secured Nginx proxy.
 
 ## Architecture
@@ -122,8 +112,6 @@ cadux/
 │   ├── config.py            # Config loading (env → .env → storage)
 │   ├── chat_ui.py           # UI components (bubbles, input, commands)
 │   ├── ws_client.py         # Hermes REST API + SSE streaming
-│   └── pairing.py           # LAN discovery & pairing client
-├── paird/                   # Pairing daemon & Hermes skill (see paird/README.md)
 ├── docs/
 │   ├── plan.md              # Implementation plan
 │   ├── spec.md              # Component specification
@@ -138,7 +126,6 @@ cadux/
 
 - **Streaming chat UI** — real-time token chunk rendering via `message.delta`
 - **Session management** — list, switch, and create sessions from the dropdown
-- **LAN pairing** — zero-typing visual verification pairing with Hermes (see `paird/`)
 - **Auto-reconnect** — exponential backoff (1–30 s) on disconnect
 - **Persistent config** — settings saved across launches
 - **Responsive** — adapts padding for mobile, tablet, and desktop sizes
