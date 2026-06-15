@@ -1,4 +1,4 @@
-import json
+import asyncio
 import logging
 import sys
 
@@ -30,9 +30,14 @@ def main(page: ft.Page):
         tooltip="Disconnected",
     )
     session_dropdown = ft.Dropdown(
-        width=160,
         text_size=12,
         label="Session",
+        expand=True,
+    )
+    model_dropdown = ft.Dropdown(
+        text_size=12,
+        label="Model",
+        expand=True,
     )
     sessions_list = []
 
@@ -40,14 +45,25 @@ def main(page: ft.Page):
     missing_banner = None
     if config is None:
         missing_banner = ft.Container(
-            content=ft.Row(
+            content=ft.Column(
                 [
-                    ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
-                    ft.Text(
-                        "Not configured — open Settings to enter WSS URL & Secret Key",
-                        size=13,
-                        color=ft.Colors.ON_ERROR_CONTAINER,
-                        expand=True,
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
+                            ft.Text(
+                                "Not configured — open Settings or auto-discover",
+                                size=13,
+                                color=ft.Colors.ON_ERROR_CONTAINER,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                    ft.ElevatedButton(
+                        "🔍 Find Server",
+                        icon=ft.Icons.SEARCH,
+                        on_click=lambda e: page.run_task(_pairing_flow, page),
+                        style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                     ),
                 ],
                 spacing=6,
@@ -62,32 +78,31 @@ def main(page: ft.Page):
     chat_column = chat_ui.build_chat_column()
     empty_state = chat_ui.build_empty_state()
 
-    # Send callback (avoids circular import with ws_client)
+    # Send callback — uses Hermes REST API chat/stream endpoint
     async def send_fn(command: str):
-        ws = page.session.store.get("ws_conn")
-        if ws is None:
-            return
-        from src.ws_client import next_id
+        from src.ws_client import create_session, send_message
 
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "command.dispatch",
-            "params": {"command": command},
-            "id": next_id(),
-        }
+        sid = None
         try:
-            await ws.send(json.dumps(payload))
-        except Exception as exc:
-            logger.warning("send error: %s", exc)
+            sid = page.session.store.get("active_session_id")
+        except AttributeError:
+            pass
+        if not sid:
+            http = page.session.store.get("http_session")
+            if http is None:
+                return
+            sid = await create_session(http, page, sessions_list, session_dropdown)
+            if sid is None:
+                return
+            page.session.store.set("active_session_id", sid)
+
+        await send_message(page, sid, command, chat_column, empty_state)
 
     async def reconnect_fn():
-        ws = page.session.store.get("ws_conn")
-        if ws is not None:
-            await ws.close()
-        from src.ws_client import ws_listener
+        from src.ws_client import rest_listener
 
         page.run_task(
-            ws_listener,
+            rest_listener,
             page,
             chat_column,
             config,
@@ -95,6 +110,7 @@ def main(page: ft.Page):
             session_dropdown,
             empty_state,
             sessions_list,
+            model_dropdown,
         )
 
     input_area = chat_ui.build_input_area(
@@ -105,11 +121,17 @@ def main(page: ft.Page):
         sessions_list,
         status_dot,
         send_fn,
+        model_dropdown=model_dropdown,
         reconnect_fn=reconnect_fn,
     )
 
     # ── App Bar ──────────────────────────────────────────────────────
     page.appbar = ft.AppBar(
+        leading=ft.IconButton(
+            ft.Icons.MENU,
+            tooltip="Menu",
+            on_click=lambda e: page.run_task(page.show_drawer),
+        ),
         title=ft.Row(
             [
                 ft.Icon(ft.Icons.FORUM, size=20),
@@ -126,6 +148,72 @@ def main(page: ft.Page):
             ),
         ],
     )
+
+    # ── Navigation Drawer ───────────────────────────────────────────
+    async def _drawer_cmd_help(e):
+        await send_fn("/help")
+
+    async def _drawer_cmd_forget(e):
+        chat_column.controls.clear()
+        chat_ui.update_empty_state(chat_column, empty_state)
+        page.update()
+        await send_fn("/forget")
+
+    async def _drawer_on_model(e):
+        await send_fn(f"/model {model_dropdown.value}")
+
+    model_dropdown.on_change = _drawer_on_model
+
+    async def _drawer_on_session_change(e):
+        sid = session_dropdown.value
+        if sid:
+            from src.ws_client import _activate_session
+
+            http = page.session.store.get("http_session")
+            if http is not None:
+                await _activate_session(http, page, sid, chat_column, empty_state)
+
+    session_dropdown.on_change = _drawer_on_session_change
+
+    drawer = ft.NavigationDrawer(
+        controls=[
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text("Controls", size=16, weight=ft.FontWeight.BOLD),
+                        ft.Divider(height=1),
+                        ft.Text("Session", size=11, weight=ft.FontWeight.W_500),
+                        session_dropdown,
+                        ft.Text("Model", size=11, weight=ft.FontWeight.W_500),
+                        model_dropdown,
+                        ft.Divider(height=1),
+                        ft.ElevatedButton(
+                            "/help",
+                            icon=ft.Icons.HELP_OUTLINE,
+                            on_click=_drawer_cmd_help,
+                            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                        ),
+                        ft.ElevatedButton(
+                            "/forget",
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            on_click=_drawer_cmd_forget,
+                            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                        ),
+                        ft.ElevatedButton(
+                            "Reconnect",
+                            icon=ft.Icons.REFRESH,
+                            on_click=lambda e: page.run_task(reconnect_fn()),
+                            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                        ),
+                    ],
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                padding=ft.padding.Padding.symmetric(horizontal=16, vertical=12),
+            ),
+        ],
+    )
+    page.drawer = drawer
 
     # ── Layout ───────────────────────────────────────────────────────
     # Stack: empty_state layered behind chat_column
@@ -156,12 +244,12 @@ def main(page: ft.Page):
     page.on_resized = _on_resize
     _on_resize(None)
 
-    # ── Start WebSocket Listener (only if configured) ────────────────
+    # ── Start REST Listener (only if configured) ─────────────────────
     if config is not None:
-        from src.ws_client import ws_listener
+        from src.ws_client import rest_listener
 
         page.run_task(
-            ws_listener,
+            rest_listener,
             page,
             chat_column,
             config,
@@ -169,6 +257,7 @@ def main(page: ft.Page):
             session_dropdown,
             empty_state,
             sessions_list,
+            model_dropdown,
         )
 
     page.update()
@@ -179,10 +268,10 @@ def main(page: ft.Page):
 
 def _show_settings_dialog(page, existing_config=None):
     url_field = ft.TextField(
-        label="WSS URL",
-        value=(existing_config or {}).get("wss_url", ""),
+        label="API URL",
+        value=(existing_config or {}).get("api_url", ""),
         width=350,
-        hint_text="wss://your-box.duckdns.org/api/ws",
+        hint_text="http://192.168.0.83:8642",
     )
     key_field = ft.TextField(
         label="Secret Key",
@@ -190,7 +279,7 @@ def _show_settings_dialog(page, existing_config=None):
         width=350,
         password=True,
         can_reveal_password=True,
-        hint_text="hex secret",
+        hint_text="Bearer token / API key",
     )
 
     def _on_save(e):
@@ -198,12 +287,11 @@ def _show_settings_dialog(page, existing_config=None):
         key = key_field.value.strip()
         if url and key:
             try:
-                page.session.store.set("wss_url", url)
+                page.session.store.set("api_url", url)
                 page.session.store.set("secret_key", key)
             except AttributeError:
                 pass
-            page.dialog.open = False
-            page.update()
+            page.pop_dialog()
             # Clean and re-initialise so the listener starts
             page.clean()
             main(page)
@@ -216,12 +304,149 @@ def _show_settings_dialog(page, existing_config=None):
             tight=True,
         ),
         actions=[
+            ft.TextButton("Find Server", on_click=lambda e: page.run_task(_pairing_flow, page)),
             ft.TextButton("Save", on_click=_on_save),
         ],
     )
 
-    page.dialog = dialog
-    dialog.open = True
+    page.show_dialog(dialog)
+
+
+# ── Auto-Pairing Flow ────────────────────────────────────────────────
+
+
+async def _pairing_flow(page: ft.Page):
+    """Scan LAN → show 3 codes → user taps one → try decrypt → auto-configure."""
+
+    # Phase 1: scanning
+    scan_dlg = ft.AlertDialog(
+        title=ft.Text("🔍 Finding Hermes…"),
+        content=ft.Text("Scanning local network…", size=14),
+    )
+    page.show_dialog(scan_dlg)
+    page.update()
+
+    from src.pairing import scan, PairingSession
+
+    servers = await scan(timeout=4.0)
+    if not servers:
+        page.pop_dialog()
+        _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
+        return
+
+    daemon_url = servers[0]["url"]
+
+    # Phase 2: start pairing → get codes + encrypted config
+    session = PairingSession(daemon_url)
+    try:
+        codes = await session.start()
+    except Exception as e:
+        page.pop_dialog()
+        _show_error_dialog(page, f"Failed to start pairing:\n{e}")
+        return
+
+    page.pop_dialog()  # remove scanning dialog
+
+    # Phase 3: show 3 tappable code buttons
+    status_text = ft.Text("Tap the code shown on the server screen", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+    result_text = ft.Text("", size=14, text_align=ft.TextAlign.CENTER)
+
+    async def _on_tap_code(code):
+        """User picked a code — send to daemon for verification."""
+        nonlocal session
+        try:
+            config = await session.confirm(code)
+        except Exception as e:
+            result_text.value = f"❌ {e}"
+            result_text.color = ft.Colors.ERROR
+            page.update()
+            return
+
+        if config is not None:
+            # Success!
+            result_text.value = "✅ Connected!"
+            result_text.color = ft.Colors.PRIMARY
+            page.update()
+            await asyncio.sleep(1)
+
+            # Auto-apply config
+            try:
+                page.session.store.set("api_url", config["api_url"])
+                page.session.store.set("secret_key", config["secret_key"])
+            except AttributeError:
+                pass
+
+            page.pop_dialog()
+            await session.close()
+            page.clean()
+            main(page)
+        else:
+            # Wrong code
+            result_text.value = "❌ Wrong code — try another"
+            result_text.color = ft.Colors.ERROR
+            page.update()
+
+    def _make_code_button(code):
+        return ft.Container(
+            content=ft.Text(code, size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+            width=80,
+            height=80,
+            border_radius=14,
+            bgcolor=ft.Colors.PRIMARY,
+            alignment=ft.alignment.Alignment.CENTER,
+            on_click=lambda e, c=code: page.run_task(_on_tap_code, c),
+            ink=True,
+        )
+
+    code_row = ft.Row(
+        [_make_code_button(c) for c in codes],
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=14,
+    )
+
+    pairing_url_display = daemon_url.replace("http://", "").rstrip("/")
+    hint_text = ft.Text(
+        f"Server operator: open http://{pairing_url_display}/\nto see which code is live",
+        size=11,
+        color=ft.Colors.OUTLINE,
+        text_align=ft.TextAlign.CENTER,
+    )
+
+    pair_dlg = ft.AlertDialog(
+        title=ft.Text("📱 Pick a code", text_align=ft.TextAlign.CENTER),
+        content=ft.Column(
+            [
+                code_row,
+                ft.Container(height=8),
+                status_text,
+                result_text,
+                ft.Container(height=4),
+                hint_text,
+            ],
+            spacing=4,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            tight=True,
+            width=320,
+        ),
+        actions=[ft.TextButton("Cancel", on_click=lambda e: page.run_task(_cancel_pairing, page, session))],
+    )
+
+    page.show_dialog(pair_dlg)
+    page.update()
+
+
+async def _cancel_pairing(page: ft.Page, session):
+    await session.close()
+    page.pop_dialog()
+
+
+def _show_error_dialog(page: ft.Page, message: str):
+    dlg = ft.AlertDialog(
+        title=ft.Text("Pairing failed"),
+        content=ft.Text(message, size=14),
+        actions=[ft.TextButton("OK", on_click=lambda e: page.pop_dialog())],
+    )
+    page.show_dialog(dlg)
     page.update()
 
 

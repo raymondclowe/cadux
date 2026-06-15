@@ -103,7 +103,9 @@ cadux/
 │   ├── main.py              # App entry point, Flet page setup
 │   ├── config.py            # Config loading (env → .env → storage)
 │   ├── chat_ui.py           # UI components (bubbles, input, commands)
-│   └── ws_client.py         # WebSocket listener with auto-reconnect
+│   ├── ws_client.py         # Hermes REST API + SSE streaming
+│   └── pairing.py           # LAN discovery & pairing client
+├── paird/                   # Pairing daemon & Hermes skill (see paird/README.md)
 ├── docs/
 │   ├── plan.md              # Implementation plan
 │   └── spec.md              # Component specification
@@ -117,7 +119,7 @@ cadux/
 
 - **Streaming chat UI** — real-time token chunk rendering via `message.delta`
 - **Session management** — list, switch, and create sessions from the dropdown
-- **Slash commands** — `/forget`, `/model` dispatched directly to Hermes
+- **LAN pairing** — zero-typing visual verification pairing with Hermes (see `paird/`)
 - **Auto-reconnect** — exponential backoff (1–30 s) on disconnect
 - **Persistent config** — settings saved across launches
 - **Responsive** — adapts padding for mobile, tablet, and desktop sizes

@@ -1,5 +1,4 @@
 import datetime
-import json
 import logging
 
 import flet as ft
@@ -48,11 +47,13 @@ def build_message_bubble(role, text, timestamp=None):
                 selectable=True,
                 size=15,
                 weight=ft.FontWeight.NORMAL,
+                no_wrap=False,
             ),
             ft.Text(ts, size=10, color=ft.Colors.OUTLINE),
         ],
         spacing=2,
         tight=True,
+        width=_max_bubble_width(),
     )
 
     container = ft.Container(
@@ -79,11 +80,19 @@ def build_message_bubble(role, text, timestamp=None):
     return row
 
 
+def add_message_bubble(chat_column, role, text, timestamp=None):
+    """Build a message bubble and add it to the chat column."""
+    bubble = build_message_bubble(role, text, timestamp=timestamp)
+    chat_column.controls.append(bubble)
+
+
 def _set_bubble_text(bubble_row, new_text):
     """Replace the text inside an existing bubble row."""
     container = bubble_row.controls[0]
     text_col = container.content
-    text_col.controls[0].value = new_text
+    text_control = text_col.controls[0]
+    text_control.value = new_text
+    text_control.update()
 
 
 def _get_bubble_text(bubble_row):
@@ -110,6 +119,15 @@ def append_delta(chat_column, chunk):
 def finalize_bubble(chat_column):
     """Mark the current assistant bubble as complete (no-op unless we add animations)."""
     pass
+
+
+def remove_typing_indicator(chat_column):
+    """Remove the typing-indicator bubble if it's still showing."""
+    if not chat_column.controls:
+        return
+    last = chat_column.controls[-1]
+    if last.data and last.data.get("role") == "assistant" and _get_bubble_text(last) == "…":
+        chat_column.controls.pop()
 
 
 # ── Session Chip ─────────────────────────────────────────────────────
@@ -155,9 +173,9 @@ def refresh_session_dropdown(dropdown, sessions):
 # ── Scroll ───────────────────────────────────────────────────────────
 
 
-def scroll_to_bottom(chat_column):
+async def scroll_to_bottom(chat_column):
     try:
-        chat_column.scroll_to(offset=-1, duration=200)
+        await chat_column.scroll_to(offset=-1, duration=200)
     except Exception:
         pass
 
@@ -184,7 +202,7 @@ def build_empty_state():
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
                 ft.Text(
-                    "Type a message or use /forget, /model, and session switcher below.",
+                    "Type a message or use /forget, /model, /help.",
                     size=13,
                     color=ft.Colors.OUTLINE,
                     text_align=ft.TextAlign.CENTER,
@@ -211,13 +229,14 @@ def build_input_area(
     sessions_list,
     status_dot,
     send_fn,
+    model_dropdown=None,
     reconnect_fn=None,
 ):
-    """Build the bottom input bar + command bar.
+    """Build the bottom input bar only.
 
+    Command controls (forget, model, sessions, reconnect) are in the drawer.
     ``send_fn`` is a callable that takes the command string and sends it
-    over the WebSocket (avoids circular import with ws_client).
-    ``reconnect_fn`` is an optional async callable to trigger reconnection.
+    over the REST API (avoids circular import with ws_client).
     """
     msg_field = ft.TextField(
         multiline=True,
@@ -241,7 +260,7 @@ def build_input_area(
         # Add typing indicator assistant bubble
         typing = build_message_bubble("assistant", "…")
         chat_column.controls.append(typing)
-        scroll_to_bottom(chat_column)
+        await scroll_to_bottom(chat_column)
         update_empty_state(chat_column, empty_state)
         page.update()
 
@@ -259,72 +278,10 @@ def build_input_area(
 
     page.on_keyboard_event = _on_key
 
-    # ── Command Bar ──
-
-    async def _cmd_forget(e):
-        chat_column.controls.clear()
-        update_empty_state(chat_column, empty_state)
-        page.update()
-        await send_fn("/forget")
-
-    forget_btn = ft.ElevatedButton(
-        "/forget",
-        icon=ft.Icons.DELETE_OUTLINE,
-        on_click=_cmd_forget,
-        style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
-    )
-
-    model_dd = ft.Dropdown(
-        value="deepseek-chat",
-        options=[
-            ft.dropdown.Option("deepseek-chat"),
-            ft.dropdown.Option("gpt-4o"),
-            ft.dropdown.Option("claude-sonnet"),
-        ],
-        width=140,
-        text_size=12,
-        label="Model",
-    )
-
-    async def _on_model(e):
-        await send_fn(f"/model {model_dd.value}")
-
-    model_dd.on_change = _on_model
-
-    async def _on_session_change(e):
-        sid = session_dropdown.value
-        if sid:
-            await send_fn(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "session.activate",
-                        "params": {"session_id": sid},
-                        "id": 9999,
-                    }
-                )
-            )
-
-    session_dropdown.on_change = _on_session_change
-
-    reconnect_btn = ft.ElevatedButton(
-        "Reconnect",
-        icon=ft.Icons.REFRESH,
-        on_click=lambda e: page.run_task(reconnect_fn()) if reconnect_fn else None,
-        style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
-    )
-
-    command_bar = ft.Row(
-        [forget_btn, model_dd, session_dropdown, reconnect_btn],
-        wrap=True,
-        spacing=4,
-        alignment=ft.MainAxisAlignment.START,
-    )
-
     input_row = ft.Row(
         [msg_field, send_btn],
         spacing=4,
         vertical_alignment=ft.CrossAxisAlignment.END,
     )
 
-    return ft.Column([command_bar, input_row], spacing=4)
+    return ft.Column([input_row], spacing=4)
