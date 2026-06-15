@@ -107,17 +107,22 @@ async def scan(
     async with aiohttp.ClientSession() as session:
         tasks = [_probe(session, ip) for ip in targets]
 
-        for coro in asyncio.as_completed(tasks, timeout=timeout):
-            try:
-                result = await coro
-                if result:
-                    found.append(result)
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.warning("Scan timed out before all IPs were probed")
-                break
-            completed += 1
-            if progress_callback:
-                progress_callback(completed, total)
+        try:
+            for coro in asyncio.as_completed(tasks, timeout=timeout):
+                try:
+                    result = await coro
+                    if result:
+                        found.append(result)
+                except (TimeoutError, asyncio.TimeoutError):
+                    logger.warning("Scan timed out before all IPs were probed")
+                    break
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total)
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning("Scan timed out before all IPs were probed")
+        # as_completed timeout raises outside the loop; session.cleanup()
+        # runs on __aexit__ even if we break early
 
     return found
 
