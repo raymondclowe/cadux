@@ -7,23 +7,24 @@ Provides a zero-typing pairing flow for Cadux clients on the LAN.
 Flow:
   1. Cadux auto-discovers paird on the LAN via GET /discover
   2. Cadux calls POST /register → gets session_id, shows "Ask Hermes to pair"
-  3.       User tells Hermes "Pair with cadux"
-  4.       Hermes calls POST /initiate → generates 6 codes, encrypts config
-  5.       Hermes displays the correct code to the user
+  3. User tells Hermes "Pair with cadux"
+  4. Hermes calls POST /initiate → generates 6 codes, encrypts config
+  5. Hermes displays the correct code to the user
   6. Cadux polls GET /session/{id} → when ready, shows 6 code buttons
-  7.       User taps the matching code on Cadux
-  8.       Cadux XOR-decrypts config with the code, verifies MD5 signature
+  7. User taps the matching code on Cadux
+  8. Cadux XOR-decrypts config with the code, verifies MD5 signature
   9. Cadux auto-configures and sends "pairing successful" to Hermes
 
 Quick start on Hermes host:
-    uv run paird/server.py
+    cd paird
+    CADUX_API_URL=http://localhost:8642 CADUX_SECRET_KEY=your-key uv run server.py
 
 Endpoints:
     GET  /              HTML pairing UI (lists sessions + correct codes)
     GET  /discover      JSON identity for auto-discovery
     POST /register      Register pairing intent → {session_id, status:"waiting"}
     GET  /session/{id}  Poll for session state → {status, codes?, config_encrypted?, md5_sig?}
-    POST /initiate      Hermes triggers pairing → {correct_code}
+    POST /initiate      Hermes triggers pairing → {correct_code, session_id}
 """
 
 import asyncio
