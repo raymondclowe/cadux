@@ -82,7 +82,7 @@ def _load_server_config():
     if not secret_key:
         env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
         try:
-            with open(env_path) as f:
+            with open(env_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith("CADUX_SECRET_KEY="):
