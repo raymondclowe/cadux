@@ -64,35 +64,61 @@ def _get_scan_targets() -> list[str]:
 # ── Discovery ────────────────────────────────────────────────────────
 
 
-async def scan(timeout: float = 3.0, port: int | None = None) -> list[dict]:
+async def scan(
+    timeout: float = 15.0,
+    port: int | None = None,
+    *,
+    progress_callback: callable | None = None,
+) -> list[dict]:
     """Scan local subnet for paird servers.
+
+    Limits concurrent probes to avoid overwhelming mobile network stacks
+    on Android.  Reports progress via *progress_callback(completed, total)*.
 
     Returns a list of discovered servers::
         [{"url": "http://192.168.0.83:8643", "ip": "192.168.0.83", "version": "1.0"}, …]
     """
     port = port or _PAIRD_PORT
     targets = _get_scan_targets()
-    logger.info("Scanning %d IPs on port %d …", len(targets), port)
+    total = len(targets)
+    logger.info("Scanning %d IPs on port %d …", total, port)
+
+    # Limit concurrent outbound connections so mobile NICs aren't swamped
+    sem = asyncio.Semaphore(20)
 
     async def _probe(session, ip):
-        try:
-            async with session.get(
-                f"http://{ip}:{port}/discover",
-                timeout=aiohttp.ClientTimeout(total=0.8),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info("Found paird at %s:%d", ip, port)
-                    return {"url": f"http://{ip}:{port}", "ip": ip, **data}
-        except (asyncio.TimeoutError, OSError, Exception):
-            pass
-        return None
+        async with sem:
+            try:
+                async with session.get(
+                    f"http://{ip}:{port}/discover",
+                    timeout=aiohttp.ClientTimeout(total=2.0),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        logger.info("Found paird at %s:%d", ip, port)
+                        return {"url": f"http://{ip}:{port}", "ip": ip, **data}
+            except (asyncio.TimeoutError, OSError, Exception):
+                pass
+            return None
+
+    found: list[dict] = []
+    completed = 0
 
     async with aiohttp.ClientSession() as session:
         tasks = [_probe(session, ip) for ip in targets]
-        results = await asyncio.gather(*tasks)
 
-    found = [r for r in results if r]
+        for coro in asyncio.as_completed(tasks, timeout=timeout):
+            try:
+                result = await coro
+                if result:
+                    found.append(result)
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.warning("Scan timed out before all IPs were probed")
+                break
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total)
+
     return found
 
 

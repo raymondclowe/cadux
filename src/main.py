@@ -319,19 +319,54 @@ async def _pairing_flow(page: ft.Page):
     """Scan LAN → register → poll (waiting for Hermes) → 6-code grid → decrypt locally."""
 
     # ── Phase 1: scan LAN ────────────────────────────────────────────
+    cancelled = False
+
+    scan_progress = ft.ProgressBar(width=260, value=0)
+    scan_label = ft.Text("Scanning local network… 0 / 255", size=13)
+    scan_spinner = ft.ProgressRing(width=20, height=20)
+
+    scan_content = ft.Column(
+        [
+            ft.Row([scan_spinner, scan_label], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=6),
+            scan_progress,
+        ],
+        spacing=4,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        tight=True,
+        width=300,
+    )
+
+    def _on_cancel_scan(e):
+        nonlocal cancelled
+        cancelled = True
+
     scan_dlg = ft.AlertDialog(
-        title=ft.Text("🔍 Finding Hermes…"),
-        content=ft.Text("Scanning local network…", size=14),
+        title=ft.Text("🔍 Finding Hermes…", text_align=ft.TextAlign.CENTER),
+        content=scan_content,
+        actions=[ft.TextButton("Cancel", on_click=_on_cancel_scan)],
     )
     page.show_dialog(scan_dlg)
     page.update()
 
     from src.pairing import scan, PairingSession
 
-    servers = await scan(timeout=4.0)
-    if not servers:
+    def _on_progress(completed: int, total: int):
+        nonlocal cancelled
+        if cancelled:
+            return
+        try:
+            scan_label.value = f"Scanning local network… {completed} / {total}"
+            scan_progress.value = completed / total if total else 0
+            page.update()
+        except Exception:
+            pass
+
+    servers = await scan(timeout=15.0, progress_callback=_on_progress)
+    if cancelled or not servers:
         page.pop_dialog()
-        _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
+        if not cancelled:
+            _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
         return
 
     daemon_url = servers[0]["url"]
