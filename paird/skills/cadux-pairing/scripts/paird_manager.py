@@ -65,7 +65,7 @@ def _find_hermes_config():
         for env_path in env_paths:
             if os.path.exists(env_path):
                 try:
-                    with open(env_path) as f:
+                    with open(env_path, encoding="utf-8", errors="replace") as f:
                         for line in f:
                             line = line.strip()
                             if line.startswith("CADUX_API_URL=") and not api_url:
@@ -84,7 +84,7 @@ def _find_hermes_config():
         config_yaml = os.path.join(HERMES_HOME, "config.yaml")
         if os.path.exists(config_yaml):
             try:
-                with open(config_yaml) as f:
+                with open(config_yaml, encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if line.startswith("api_url:") and not api_url:
