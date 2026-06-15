@@ -63,7 +63,15 @@ uv run python -m src.main
 
 If no `.env` is present, a settings dialog will appear on first launch to enter the WSS URL and secret key. These are saved to local storage for subsequent launches.
 
-### 4. Build (Android APK)
+### 4. Build & Deploy
+
+See **[docs/build-and-deploy.md](docs/build-and-deploy.md)** for full instructions covering:
+
+- Desktop packaging (`flet pack`)
+- Android APK build (debug/release, signing, multi-arch)
+- GitHub release creation (manual + GitHub Actions CI/CD)
+
+**Quick APK build:**
 
 ```bash
 flet build apk
@@ -108,7 +116,8 @@ cadux/
 ├── paird/                   # Pairing daemon & Hermes skill (see paird/README.md)
 ├── docs/
 │   ├── plan.md              # Implementation plan
-│   └── spec.md              # Component specification
+│   ├── spec.md              # Component specification
+│   └── build-and-deploy.md  # Build, sign, release & CI/CD guide
 ├── .env.example             # Template for connection config
 ├── TEST_LOG.md              # Validation checklist
 ├── pyproject.toml           # Project metadata & dependencies
