@@ -25,7 +25,7 @@ https://raw.githubusercontent.com/raymondclowe/cadux/main/docs/pairing.md
 Tell the user to download and install the Cadux Android app from:
 
 ```
-https://github.com/raymondclowe/cadux/releases/download/v0.2.0/cadux.apk
+https://github.com/raymondclowe/cadux/releases/download/v0.2.1/cadux.apk
 ```
 
 Walk them through it:
