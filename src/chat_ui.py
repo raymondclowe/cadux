@@ -218,6 +218,102 @@ def build_empty_state():
     )
 
 
+# ── Pairing Widgets ──────────────────────────────────────────────────
+
+
+def build_pin_entry(page=None, on_submit=None):
+    """Build a 4-char PIN entry widget with auto-advancing boxes.
+
+    Returns a ``ft.Column`` containing the row of boxes, an error text,
+    and a Connect button. Calls ``on_submit(pin_text)`` when the user
+    taps Connect and all 4 chars are filled.
+
+    The *on_submit* callback is expected to be async.
+    """
+    boxes: list[ft.TextField] = []
+    error_text = ft.Text("", size=12, color=ft.Colors.ERROR)
+
+    for i in range(4):
+        box = ft.TextField(
+            width=56,
+            height=56,
+            text_align=ft.TextAlign.CENTER,
+            text_size=28,
+            max_length=1,
+            capitalization=ft.TextCapitalization.CHARACTERS,
+            autofocus=i == 0,
+            content_padding=ft.padding.Padding.only(left=0, top=0, right=0, bottom=4),
+        )
+        boxes.append(box)
+
+    def _make_on_change(i):
+        def handler(e):
+            val = boxes[i].value.upper() if boxes[i].value else ""
+            boxes[i].value = val
+            if val and i < 3:
+                if page is not None:
+                    page.run_task(boxes[i + 1].focus_async)
+                else:
+                    boxes[i + 1].focus()
+        return handler
+
+    def _make_on_key(i):
+        def handler(e: ft.KeyboardEvent):
+            if e.key == "Backspace" and i > 0 and not boxes[i].value:
+                boxes[i - 1].value = ""
+                if page is not None:
+                    page.run_task(boxes[i - 1].focus_async)
+                else:
+                    boxes[i - 1].focus()
+        return handler
+
+    for i in range(4):
+        boxes[i].on_change = _make_on_change(i)
+        boxes[i].on_keyboard_event = _make_on_key(i)
+
+    # Connect button — Flet accepts async callback directly
+    async def _on_connect(e):
+        pin = "".join(b.value or "" for b in boxes).strip()
+        if len(pin) < 4:
+            error_text.value = "Enter the 4-character code from Hermes"
+            return
+        error_text.value = ""
+        if on_submit:
+            await on_submit(pin)
+
+    connect_btn = ft.ElevatedButton(
+        "Connect",
+        icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+        on_click=_on_connect,
+        style=ft.ButtonStyle(text_style=ft.TextStyle(size=14)),
+    )
+
+    row = ft.Row(boxes, spacing=6, alignment=ft.MainAxisAlignment.CENTER)
+    return ft.Column(
+        [ft.Text("Enter code from Hermes:", size=14, weight=ft.FontWeight.W_500),
+         row,
+         error_text,
+         ft.Row([connect_btn], alignment=ft.MainAxisAlignment.CENTER)],
+        spacing=8,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        tight=True,
+    )
+
+
+def build_discovery_status():
+    """Build a status widget showing a spinner and search text."""
+    return ft.Column(
+        [
+            ft.ProgressRing(width=24, height=24),
+            ft.Text("Searching for Hermes on your local network…",
+                    size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+        ],
+        spacing=8,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        tight=True,
+    )
+
+
 # ── Input Area ───────────────────────────────────────────────────────
 
 

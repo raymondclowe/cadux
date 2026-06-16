@@ -78,7 +78,7 @@ def main(page: ft.Page):
                         [
                             ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
                             ft.Text(
-                                "Not configured — open Settings to connect",
+                                "Not configured — set up a connection to Hermes",
                                 size=13,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                                 expand=True,
@@ -89,16 +89,10 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "Settings",
-                                icon=ft.Icons.SETTINGS,
-                                on_click=lambda e: _show_settings_dialog(page),
-                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
-                            ),
-                            ft.OutlinedButton(
-                                "� Code Pair",
-                                icon=ft.Icons.VPN_KEY,
-                                on_click=lambda e: _show_settings_dialog(page),
-                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                                "📱 Set Up Connection",
+                                icon=ft.Icons.WIFI,
+                                on_click=lambda e: page.run_task(_pairing_flow_dialog, page),
+                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=13)),
                             ),
                         ],
                         spacing=8,
@@ -111,6 +105,10 @@ def main(page: ft.Page):
             border_radius=6,
             margin=ft.margin.Margin.only(bottom=4),
         )
+
+    # ── UI Components ────────────────────────────────────────────────
+    chat_column = chat_ui.build_chat_column()
+    empty_state = chat_ui.build_empty_state()
 
     # ── UI Components ────────────────────────────────────────────────
     chat_column = chat_ui.build_chat_column()
@@ -463,26 +461,72 @@ async def _delete_current_profile(page: ft.Page):
     page.update()
 
 
+# ── Pairing Flow Entry (from unconfigured banner) ────────────────────
+
+
+async def _pairing_flow_dialog(page: ft.Page):
+    """Open the pairing dialog as the primary setup flow.
+
+    Falls back to manual-entry settings dialog if pairing fails.
+    """
+    from src.pairing import pairing_flow
+
+    success = await pairing_flow(page)
+    if success:
+        return  # pairing_flow handles UI rebuild on success
+
+    # Pairing failed — show settings dialog with manual fields as secondary
+    _show_settings_dialog(page)
+
+
 # ── Settings Dialog ──────────────────────────────────────────────────
 
 
 def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None):
-    """Show settings dialog.
+    """Show settings dialog — pairing primary, manual fields collapsed as fallback.
 
     If *edit_profile* is given, the dialog pre-fills fields from that profile
-    and updates it on save instead of creating a new one.
+    and shows a "Re-pair" button at top.
     """
-    # ── Tab 1: Manual entry ──────────────────────────────────────────
+    # ── Pairing section (primary) ────────────────────────────────────
     profile_name = edit_profile.name if edit_profile else ""
+
+    def _open_pairing(e):
+        page.pop_dialog()
+        page.run_task(_pairing_flow_dialog, page)
+
+    pair_btn = ft.ElevatedButton(
+        "📱 Set Up with Code",
+        icon=ft.Icons.WIFI,
+        on_click=_open_pairing,
+        style=ft.ButtonStyle(text_style=ft.TextStyle(size=14)),
+    )
+
+    pairing_header = ft.Column(
+        [
+            ft.Text("Quick Connect", size=15, weight=ft.FontWeight.BOLD),
+            ft.Text(
+                "Use the code Hermes shows you to pair automatically.",
+                size=12,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+            pair_btn,
+        ],
+        spacing=6,
+        tight=True,
+    )
+
+    # ── Manual section (collapsed fallback) ──────────────────────────
+    manual_visible = edit_profile is not None  # expanded if editing existing
     url_field = ft.TextField(
         label="API URL",
-        value=(existing_config or {}).get("api_url", ""),
+        value=(existing_config or {}).get("api_url", edit_profile.api_url if edit_profile else ""),
         width=350,
         hint_text="http://192.168.0.83:8642",
     )
     key_field = ft.TextField(
         label="Secret Key",
-        value=(existing_config or {}).get("secret_key", ""),
+        value=(existing_config or {}).get("secret_key", edit_profile.secret_key if edit_profile else ""),
         width=350,
         password=True,
         can_reveal_password=True,
@@ -495,6 +539,13 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         hint_text="e.g. Home, Work, Dad",
     )
 
+    manual_fields = ft.Column(
+        [name_field, url_field, key_field],
+        spacing=10,
+        tight=True,
+        visible=manual_visible,
+    )
+
     def _on_save(e):
         url = url_field.value.strip()
         key = key_field.value.strip()
@@ -502,21 +553,57 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         if url and key:
             _save_config(page, url, key, name, edit_profile=edit_profile)
 
-    manual_tab = ft.Column(
-        [name_field, url_field, key_field],
-        spacing=12,
+    save_btn = ft.ElevatedButton(
+        "Save & Connect",
+        on_click=_on_save,
+        visible=manual_visible,
+        style=ft.ButtonStyle(text_style=ft.TextStyle(size=13)),
+    )
+
+    def _toggle_manual(e):
+        manual_fields.visible = not manual_fields.visible
+        save_btn.visible = manual_fields.visible
+        if manual_fields.visible:
+            toggle_btn.text = "Hide Manual Entry"
+        else:
+            toggle_btn.text = "Enter Manually"
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    toggle_btn = ft.TextButton(
+        "Enter Manually" if not manual_visible else "Hide Manual Entry",
+        on_click=_toggle_manual,
+    )
+
+    content = ft.Column(
+        [pairing_header, ft.Divider(height=1), toggle_btn, manual_fields, save_btn],
+        spacing=10,
         tight=True,
+        width=360,
     )
 
-    dialog = ft.AlertDialog(
-        title=ft.Text("Cadux Settings"),
-        content=manual_tab,
-        actions=[
-            ft.TextButton("Save", on_click=_on_save),
-        ],
-    )
+    if edit_profile:
+        # Prepend profile info for already-configured state
+        title = ft.Text(f"Settings — {edit_profile.name}", size=16, weight=ft.FontWeight.BOLD)
+        reconfigure = ft.Row(
+            [
+                ft.Container(width=10, height=10, border_radius=5, bgcolor=ft.Colors.GREEN),
+                ft.Text(f"{edit_profile.api_url}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ],
+            spacing=6,
+        )
+        content = ft.Column(
+            [title, reconfigure, ft.Divider(height=1), pairing_header, ft.Divider(height=1), toggle_btn, manual_fields, save_btn],
+            spacing=10,
+            tight=True,
+            width=360,
+        )
 
+    dialog = ft.AlertDialog(title=ft.Text("Cadux Settings"), content=content)
     page.show_dialog(dialog)
+    page.update()
 
 
 def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edit_profile: Profile = None):
@@ -564,4 +651,5 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
 
 if __name__ == "__main__":
     ft.run(main=main)
+
 
