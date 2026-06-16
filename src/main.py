@@ -78,7 +78,7 @@ def main(page: ft.Page):
                         [
                             ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
                             ft.Text(
-                                "Not configured — set up a connection to Hermes",
+                                "Not configured — open Settings or use a pairing method",
                                 size=13,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                                 expand=True,
@@ -89,10 +89,16 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "📱 Set Up Connection",
-                                icon=ft.Icons.WIFI,
-                                on_click=lambda e: page.run_task(_pairing_flow_dialog, page),
-                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=13)),
+                                "🔍 LAN Scan",
+                                icon=ft.Icons.SEARCH,
+                                on_click=lambda e: page.run_task(_pairing_flow, page),
+                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                            ),
+                            ft.OutlinedButton(
+                                "📱 QR Code",
+                                icon=ft.Icons.QR_CODE_SCANNER,
+                                on_click=lambda e: _show_settings_dialog(page),
+                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
                         ],
                         spacing=8,
@@ -105,10 +111,6 @@ def main(page: ft.Page):
             border_radius=6,
             margin=ft.margin.Margin.only(bottom=4),
         )
-
-    # ── UI Components ────────────────────────────────────────────────
-    chat_column = chat_ui.build_chat_column()
-    empty_state = chat_ui.build_empty_state()
 
     # ── UI Components ────────────────────────────────────────────────
     chat_column = chat_ui.build_chat_column()
@@ -461,72 +463,26 @@ async def _delete_current_profile(page: ft.Page):
     page.update()
 
 
-# ── Pairing Flow Entry (from unconfigured banner) ────────────────────
-
-
-async def _pairing_flow_dialog(page: ft.Page):
-    """Open the pairing dialog as the primary setup flow.
-
-    Falls back to manual-entry settings dialog if pairing fails.
-    """
-    from src.pairing import pairing_flow
-
-    success = await pairing_flow(page)
-    if success:
-        return  # pairing_flow handles UI rebuild on success
-
-    # Pairing failed — show settings dialog with manual fields as secondary
-    _show_settings_dialog(page)
-
-
 # ── Settings Dialog ──────────────────────────────────────────────────
 
 
 def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None):
-    """Show settings dialog — pairing primary, manual fields collapsed as fallback.
+    """Show settings dialog.
 
     If *edit_profile* is given, the dialog pre-fills fields from that profile
-    and shows a "Re-pair" button at top.
+    and updates it on save instead of creating a new one.
     """
-    # ── Pairing section (primary) ────────────────────────────────────
+    # ── Tab 1: Manual entry ──────────────────────────────────────────
     profile_name = edit_profile.name if edit_profile else ""
-
-    def _open_pairing(e):
-        page.pop_dialog()
-        page.run_task(_pairing_flow_dialog, page)
-
-    pair_btn = ft.ElevatedButton(
-        "📱 Set Up with Code",
-        icon=ft.Icons.WIFI,
-        on_click=_open_pairing,
-        style=ft.ButtonStyle(text_style=ft.TextStyle(size=14)),
-    )
-
-    pairing_header = ft.Column(
-        [
-            ft.Text("Quick Connect", size=15, weight=ft.FontWeight.BOLD),
-            ft.Text(
-                "Use the code Hermes shows you to pair automatically.",
-                size=12,
-                color=ft.Colors.ON_SURFACE_VARIANT,
-            ),
-            pair_btn,
-        ],
-        spacing=6,
-        tight=True,
-    )
-
-    # ── Manual section (collapsed fallback) ──────────────────────────
-    manual_visible = edit_profile is not None  # expanded if editing existing
     url_field = ft.TextField(
         label="API URL",
-        value=(existing_config or {}).get("api_url", edit_profile.api_url if edit_profile else ""),
+        value=(existing_config or {}).get("api_url", ""),
         width=350,
         hint_text="http://192.168.0.83:8642",
     )
     key_field = ft.TextField(
         label="Secret Key",
-        value=(existing_config or {}).get("secret_key", edit_profile.secret_key if edit_profile else ""),
+        value=(existing_config or {}).get("secret_key", ""),
         width=350,
         password=True,
         can_reveal_password=True,
@@ -539,13 +495,6 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         hint_text="e.g. Home, Work, Dad",
     )
 
-    manual_fields = ft.Column(
-        [name_field, url_field, key_field],
-        spacing=10,
-        tight=True,
-        visible=manual_visible,
-    )
-
     def _on_save(e):
         url = url_field.value.strip()
         key = key_field.value.strip()
@@ -553,57 +502,199 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         if url and key:
             _save_config(page, url, key, name, edit_profile=edit_profile)
 
-    save_btn = ft.ElevatedButton(
-        "Save & Connect",
-        on_click=_on_save,
-        visible=manual_visible,
-        style=ft.ButtonStyle(text_style=ft.TextStyle(size=13)),
+    manual_tab = ft.Column(
+        [name_field, url_field, key_field],
+        spacing=12,
+        tight=True,
     )
 
-    def _toggle_manual(e):
-        manual_fields.visible = not manual_fields.visible
-        save_btn.visible = manual_fields.visible
-        if manual_fields.visible:
-            toggle_btn.text = "Hide Manual Entry"
-        else:
-            toggle_btn.text = "Enter Manually"
+    # ── Tab 2: QR code scan / paste ────────────────────────────────
+    qr_blob_field = ft.TextField(
+        label="Encrypted Config (paste from QR scan)",
+        value="",
+        multiline=True,
+        min_lines=3,
+        max_lines=6,
+        width=350,
+        hint_text="Paste the base64 blob you scanned from the QR code",
+        text_size=11,
+    )
+    qr_code_field = ft.TextField(
+        label="Decryption Code",
+        value="",
+        width=180,
+        hint_text="e.g. K47M",
+        text_size=14,
+    )
+    qr_result_text = ft.Text("", size=13, text_align=ft.TextAlign.CENTER)
+
+    async def _on_qr_decrypt(e):
+        from src.pairing import decrypt_blob
+
+        blob = qr_blob_field.value.strip()
+        code = qr_code_field.value.strip()
+        if not blob or not code:
+            qr_result_text.value = "❌ Fill in both fields"
+            qr_result_text.color = ft.Colors.ERROR
+            page.update()
+            return
+
+        config = decrypt_blob(blob, code)
+        if config is None:
+            qr_result_text.value = "❌ Wrong code or malformed blob — try again"
+            qr_result_text.color = ft.Colors.ERROR
+            page.update()
+            return
+
+        qr_result_text.value = "✅ Decrypted! Connecting…"
+        qr_result_text.color = ft.Colors.PRIMARY
+        page.update()
+        await asyncio.sleep(0.5)
+
+        _save_config(page, config["api_url"], config["secret_key"])
+
+    # ── QR scanner via FilePicker ───────────────────────────────────
+    scan_result_text = ft.Text("", size=12, text_align=ft.TextAlign.CENTER)
+    scanner_available = False
+    try:
+        from src.qr_scanner import is_available as _qr_avail, decode_qr_from_file as _qr_decode
+        scanner_available = _qr_avail()
+    except ImportError:
+        pass
+
+    if scanner_available:
+        file_picker = ft.FilePicker()
+        file_picker.on_result = lambda e: _on_pick_result(e, page, qr_blob_field, qr_code_field, scan_result_text)
+
+        # FilePicker must be added to overlay before use
         try:
+            page.overlay.append(file_picker)
             page.update()
         except Exception:
             pass
 
-    toggle_btn = ft.TextButton(
-        "Enter Manually" if not manual_visible else "Hide Manual Entry",
-        on_click=_toggle_manual,
+        def _on_pick_result(e: ft.FilePickerResultEvent, page, blob_field, code_field, result_label):
+            """Callback when user picks an image from gallery."""
+            if not e.files:
+                return
+            path = e.files[0].path
+            if not path:
+                result_label.value = "❌ Could not access the selected file"
+                result_label.color = ft.Colors.ERROR
+                page.update()
+                return
+
+            decoded = _qr_decode(path)
+            if decoded is None:
+                result_label.value = "❌ No QR code found in the image — try a clearer screenshot"
+                result_label.color = ft.Colors.ERROR
+                page.update()
+                return
+
+            # Fill the blob field
+            blob_field.value = decoded
+            blob_field.update()
+            result_label.value = "✅ QR decoded! Now type the code and tap Decrypt & Connect"
+            result_label.color = ft.Colors.PRIMARY
+            page.update()
+
+        scan_btn = ft.ElevatedButton(
+            "📷 Scan QR from Image",
+            icon=ft.Icons.IMAGE_SEARCH,
+            on_click=lambda e: file_picker.pick_files(
+                allow_multiple=False,
+                allowed_extensions=["png", "jpg", "jpeg", "gif", "webp"],
+            ),
+            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+        )
+    else:
+        scan_btn = ft.OutlinedButton(
+            "📷 Scan QR from Image",
+            icon=ft.Icons.IMAGE_SEARCH,
+            disabled=True,
+            tooltip="Install pyzbar + Pillow to enable QR scanning from images",
+            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+        )
+
+    qr_tab = ft.Column(
+        [
+            ft.Text(
+                "Scan the QR code from the paird page using your camera, or paste the blob manually below.",
+                size=12,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+            scan_btn,
+            scan_result_text,
+            ft.Divider(height=1),
+            ft.Text("Or paste the blob + code manually:", size=11, color=ft.Colors.OUTLINE),
+            qr_blob_field,
+            ft.Row(
+                [qr_code_field, ft.ElevatedButton("Decrypt & Connect", on_click=_on_qr_decrypt)],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.END,
+            ),
+            qr_result_text,
+        ],
+        spacing=8,
+        tight=True,
     )
 
-    content = ft.Column(
-        [pairing_header, ft.Divider(height=1), toggle_btn, manual_fields, save_btn],
+    # ── Tab switcher (simple button toggle, no ft.Tabs API) ───────
+    # Flet 0.85.3 Tabs requires 'content'+'length' constructor args
+    # and Tab uses 'label' not 'text' — so use a button toggle instead.
+    tab_index = {"value": 0}
+    manual_container = ft.Container(content=manual_tab, visible=True)
+    qr_container = ft.Container(content=qr_tab, visible=False)
+
+    def _switch_tab(idx):
+        tab_index["value"] = idx
+        manual_container.visible = idx == 0
+        qr_container.visible = idx == 1
+        manual_container.update()
+        qr_container.update()
+        manual_tab_btn.style = _tab_btn_style(True) if idx == 0 else _tab_btn_style(False)
+        qr_tab_btn.style = _tab_btn_style(True) if idx == 1 else _tab_btn_style(False)
+        manual_tab_btn.update()
+        qr_tab_btn.update()
+
+    def _tab_btn_style(active):
+        if active:
+            return ft.ButtonStyle(
+                bgcolor=ft.Colors.PRIMARY,
+                color=ft.Colors.ON_PRIMARY,
+                text_style=ft.TextStyle(size=13),
+            )
+        return ft.ButtonStyle(
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            text_style=ft.TextStyle(size=13),
+        )
+
+    manual_tab_btn = ft.ElevatedButton(
+        "Manual", on_click=lambda e: _switch_tab(0), style=_tab_btn_style(True)
+    )
+    qr_tab_btn = ft.ElevatedButton(
+        "QR Code", on_click=lambda e: _switch_tab(1), style=_tab_btn_style(False)
+    )
+    tab_buttons = ft.Row(
+        [manual_tab_btn, qr_tab_btn], spacing=6, alignment=ft.MainAxisAlignment.CENTER
+    )
+    tab_content = ft.Column(
+        [tab_buttons, manual_container, qr_container],
         spacing=10,
         tight=True,
-        width=360,
     )
 
-    if edit_profile:
-        # Prepend profile info for already-configured state
-        title = ft.Text(f"Settings — {edit_profile.name}", size=16, weight=ft.FontWeight.BOLD)
-        reconfigure = ft.Row(
-            [
-                ft.Container(width=10, height=10, border_radius=5, bgcolor=ft.Colors.GREEN),
-                ft.Text(f"{edit_profile.api_url}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-            ],
-            spacing=6,
-        )
-        content = ft.Column(
-            [title, reconfigure, ft.Divider(height=1), pairing_header, ft.Divider(height=1), toggle_btn, manual_fields, save_btn],
-            spacing=10,
-            tight=True,
-            width=360,
-        )
+    dialog = ft.AlertDialog(
+        title=ft.Text("Cadux Settings"),
+        content=tab_content,
+        actions=[
+            ft.TextButton("Find Server", on_click=lambda e: page.run_task(_pairing_flow, page)),
+            ft.TextButton("Save", on_click=_on_save),
+        ],
+    )
 
-    dialog = ft.AlertDialog(title=ft.Text("Cadux Settings"), content=content)
     page.show_dialog(dialog)
-    page.update()
 
 
 def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edit_profile: Profile = None):
@@ -646,10 +737,276 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
     main(page)
 
 
+# ── Auto-Pairing Flow ────────────────────────────────────────────────
 
+
+async def _pairing_flow(page: ft.Page):
+    """Scan LAN → register → poll (waiting for Hermes) → 6-code grid → decrypt locally."""
+
+    # ── Phase 1: scan LAN ────────────────────────────────────────────
+    cancelled = False
+
+    scan_progress = ft.ProgressBar(width=260, value=0)
+    scan_label = ft.Text("Scanning local network… 0 / 255", size=13)
+    scan_spinner = ft.ProgressRing(width=20, height=20)
+
+    scan_content = ft.Column(
+        [
+            ft.Row([scan_spinner, scan_label], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Container(height=6),
+            scan_progress,
+        ],
+        spacing=4,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        tight=True,
+        width=300,
+    )
+
+    def _on_cancel_scan(e):
+        nonlocal cancelled
+        cancelled = True
+
+    scan_dlg = ft.AlertDialog(
+        title=ft.Text("🔍 Finding Hermes…", text_align=ft.TextAlign.CENTER),
+        content=scan_content,
+        actions=[ft.TextButton("Cancel", on_click=_on_cancel_scan)],
+    )
+    page.show_dialog(scan_dlg)
+    page.update()
+
+    from src.pairing import scan, PairingSession
+
+    def _on_progress(completed: int, total: int):
+        nonlocal cancelled
+        if cancelled:
+            return
+        try:
+            scan_label.value = f"Scanning local network… {completed} / {total}"
+            scan_progress.value = completed / total if total else 0
+            page.update()
+        except Exception:
+            pass
+
+    servers = await scan(timeout=15.0, progress_callback=_on_progress)
+    if cancelled or not servers:
+        page.pop_dialog()
+        if not cancelled:
+            _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
+        return
+
+    from aiohttp import ContentTypeError
+
+    # ── Phase 2: register with paird (try servers in order) ─────────
+    session = None
+    for srv in servers:
+        url = srv["url"]
+        try:
+            candidate = PairingSession(url)
+            await candidate.register()
+            session = candidate
+            logger.info("Registered with paird at %s", url)
+            break
+        except ContentTypeError:
+            logger.warning("Server %s doesn't support /register (old paird?)", url)
+            await candidate.close()
+            continue
+        except Exception as e:
+            logger.warning("Failed to register with %s: %s", url, e)
+            await candidate.close()
+            continue
+
+    if session is None:
+        page.pop_dialog()
+        _show_error_dialog(
+            page,
+            "Found paird servers but none accepted registration.\n"
+            "Make sure paird is up-to-date (v2) on the Hermes host.\n"
+            "Run: git pull && uv run paird/server.py",
+        )
+        return
+
+    # ── Phase 3: show "waiting for Hermes" spinner ───────────────────
+    waiting_text = ft.Text(
+        "Ask Hermes:  \"Pair with cadux\"",
+        size=14,
+        text_align=ft.TextAlign.CENTER,
+    )
+    spinner = ft.ProgressRing(width=32, height=32)
+    cancel_btn = ft.TextButton(
+        "Cancel",
+        on_click=lambda e: page.run_task(_cancel_pairing, page, session),
+    )
+
+    wait_dlg = ft.AlertDialog(
+        title=ft.Text("⏳ Waiting for Hermes", text_align=ft.TextAlign.CENTER),
+        content=ft.Column(
+            [spinner, ft.Container(height=8), waiting_text],
+            spacing=4,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            tight=True,
+            width=280,
+        ),
+        actions=[cancel_btn],
+    )
+    page.pop_dialog()  # remove scan dialog
+    page.show_dialog(wait_dlg)
+    page.update()
+
+    # ── Phase 4: poll until Hermes initiates ─────────────────────────
+    try:
+        result = await session.poll(timeout=120.0)
+    except Exception as exc:
+        logger.error("Poll failed: %s", exc)
+        result = None
+    if result is None:
+        page.pop_dialog()
+        _show_error_dialog(page, "Timed out waiting for Hermes.\nSay \"Pair with cadux\" and try again.")
+        await session.close()
+        return
+
+    codes: list[str] = result["codes"]
+
+    # ── Phase 5: show 6 codes in 2×3 grid ────────────────────────────
+    status_text = ft.Text(
+        "Tap the code that Hermes shows",
+        size=13,
+        color=ft.Colors.ON_SURFACE_VARIANT,
+        text_align=ft.TextAlign.CENTER,
+    )
+    result_text = ft.Text("", size=14, text_align=ft.TextAlign.CENTER)
+
+    async def _on_tap_code(code):
+        """User tapped a code — try decrypt locally with MD5 check."""
+        nonlocal session
+        config = session.try_code(code)
+
+        if config is not None:
+            # ✅ Correct code
+            result_text.value = "✅ Paired!"
+            result_text.color = ft.Colors.PRIMARY
+            page.update()
+            await asyncio.sleep(0.6)
+
+            # Save config + create profile
+            try:
+                page.session.store.set("api_url", config["api_url"])
+                page.session.store.set("secret_key", config["secret_key"])
+            except AttributeError:
+                pass
+
+            # Create a profile if none exists yet
+            active_p = get_active_profile(page)
+            if active_p is None:
+                profile = create_profile(page, "From Pairing", config["api_url"], config["secret_key"])
+                set_active_profile_id(page, profile.id)
+
+            page.pop_dialog()
+            await session.close()
+
+            # ── Phase 5b: post-pairing confirmation to Hermes ──
+            _send_pairing_confirmation(page, config)
+
+            # Rebuild UI with config active
+            page.clean()
+            main(page)
+        else:
+            # ❌ Wrong code — flash red
+            result_text.value = "❌ Wrong code — try another"
+            result_text.color = ft.Colors.ERROR
+            page.update()
+            await asyncio.sleep(0.5)
+            result_text.value = ""
+            page.update()
+
+    def _make_code_button(code):
+        return ft.Container(
+            content=ft.Text(code, size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+            width=90,
+            height=72,
+            border_radius=14,
+            bgcolor=ft.Colors.PRIMARY,
+            alignment=ft.alignment.Alignment.CENTER,
+            on_click=lambda e, c=code: page.run_task(_on_tap_code, c),
+            ink=True,
+        )
+
+    # Build 2×3 grid: two rows of 3
+    code_buttons = [_make_code_button(c) for c in codes]
+    code_grid = ft.Column(
+        [
+            ft.Row(code_buttons[0:3], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
+            ft.Container(height=8),
+            ft.Row(code_buttons[3:6], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
+        ],
+        spacing=0,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+    pair_dlg = ft.AlertDialog(
+        title=ft.Text("📱 Pick the matching code", text_align=ft.TextAlign.CENTER, size=16),
+        content=ft.Column(
+            [
+                code_grid,
+                ft.Container(height=6),
+                status_text,
+                result_text,
+            ],
+            spacing=4,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            tight=True,
+            width=340,
+        ),
+        actions=[ft.TextButton("Cancel", on_click=lambda e: page.run_task(_cancel_pairing, page, session))],
+    )
+
+    page.pop_dialog()  # remove waiting dialog
+    page.show_dialog(pair_dlg)
+    page.update()
+
+
+async def _cancel_pairing(page: ft.Page, session):
+    await session.close()
+    try:
+        page.pop_dialog()
+    except Exception:
+        pass
+
+
+def _send_pairing_confirmation(page: ft.Page, config: dict):
+    """Fire-and-forget POST to Hermes announcing successful pairing."""
+    import urllib.request
+    import json
+
+    api_url = config.get("api_url", "").rstrip("/")
+    secret = config.get("secret_key", "")
+    if not api_url or not secret:
+        return
+
+    try:
+        req = urllib.request.Request(
+            f"{api_url}/chat/message",
+            method="POST",
+            data=json.dumps({"message": "This is Cadux, pairing successful."}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {secret}",
+            },
+        )
+        # Non-blocking: fire and forget
+        urllib.request.urlopen(req, timeout=3.0)
+    except Exception:
+        pass  # best-effort
+
+
+def _show_error_dialog(page: ft.Page, message: str):
+    dlg = ft.AlertDialog(
+        title=ft.Text("Pairing failed"),
+        content=ft.Text(message, size=14),
+        actions=[ft.TextButton("OK", on_click=lambda e: page.pop_dialog())],
+    )
+    page.show_dialog(dlg)
+    page.update()
 
 
 if __name__ == "__main__":
     ft.run(main=main)
-
-

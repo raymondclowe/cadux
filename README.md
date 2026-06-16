@@ -35,7 +35,7 @@ Walk them through it:
 
 ## Step 4 — Pair the phone
 
-Now tell the user: *"Say 'pair my Cadux' whenever you're ready."*
+Tell the user that once they have installed the app they should : *"Say 'pair my Cadux' whenever you're ready."*
 
 When they ask you to pair, follow the instructions in `docs/pairing.md` to generate a PIN and start the pairing daemon.
 
