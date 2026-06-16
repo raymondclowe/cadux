@@ -1,3 +1,12 @@
+[Instruction for Hermes]
+- 1 download this file and save it:https://raw.githubusercontent.com/raymo/cadux/main/paird/server.py Save it as paird/server.py in this workspace.
+- 2 Also download docs/pairing.md from the same repo and save it as docs/pairing.md
+- 3 Get the user to download the android .apk from [url] and install and run it. Talk them through this.
+
+[Instruction for Human]
+- Say to Hermes "Hey Hermes, install Cadux on my phone from https://github.com/raymondclowe/cadux/"
+
+
 # Cadux /kəˈdʌks/
 
 > The legendary winged staff carried by the messenger god Hermes.
