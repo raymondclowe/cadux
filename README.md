@@ -1,144 +1,141 @@
-[Instruction for Hermes]
-- 1 download this file and save it:https://raw.githubusercontent.com/raymo/cadux/main/paird/server.py Save it as paird/server.py in this workspace.
-- 2 Also download docs/pairing.md from the same repo and save it as docs/pairing.md
-- 3 Get the user to download the android .apk from [url] and install and run it. Talk them through this.
+# Instructions for Hermes
 
-[Instruction for Human]
-- Say to Hermes "Hey Hermes, install Cadux on my phone from https://github.com/raymondclowe/cadux/"
+When a user asks you to install Cadux, follow these steps in order.
 
+## Step 1 — Download the pairing daemon
+
+Download this file and save it as `paird/server.py` in your workspace:
+
+```
+https://raw.githubusercontent.com/raymondclowe/cadux/main/paird/server.py
+```
+
+Make sure the directory `paird/` exists before saving.
+
+## Step 2 — Download the skill instructions
+
+Download this file and save it as `docs/pairing.md` in your workspace:
+
+```
+https://raw.githubusercontent.com/raymondclowe/cadux/main/docs/pairing.md
+```
+
+## Step 3 — Help the user install the APK
+
+Tell the user to download and install the Cadux Android app from:
+
+```
+https://github.com/raymondclowe/cadux/releases/download/v0.2.0/cadux.apk
+```
+
+Walk them through it:
+- On their Android phone, open the link in a browser
+- They may need to allow "Install from unknown sources" in Settings
+- Once installed, open Cadux — it will show a "Set Up Connection" screen
+
+## Step 4 — Pair the phone
+
+Now tell the user: *"Say 'pair my Cadux' whenever you're ready."*
+
+When they ask you to pair, follow the instructions in `docs/pairing.md` to generate a PIN and start the pairing daemon.
+
+---
+
+# Instructions for Humans
+
+Say this to Hermes:
+
+> **Hey Hermes, install Cadux on my phone from https://github.com/raymondclowe/cadux/**
+
+Then follow Hermes's instructions to download and install the APK.
+
+Once installed, tell Hermes: **"pair my Cadux"** — Hermes will give you a short code to type into the Cadux app. No typing long secret keys.
+
+---
 
 # Cadux /kəˈdʌks/
 
 > The legendary winged staff carried by the messenger god Hermes.
 
-A fast, lightweight Android (and desktop) client for the [Hermes Agent Gateway](https://github.com/NousResearch/hermes-agent). Communicates with a Hermes backend via JSON-RPC 2.0 over WebSockets through a TLS-secured Nginx proxy.
+A fast, lightweight Android (and desktop) client for the [Hermes Agent Gateway](https://github.com/NousResearch/hermes-agent). Connects directly to a Hermes backend via its REST API with SSE streaming.
+
+## Quick Start (Desktop)
+
+```bash
+# Clone
+git clone https://github.com/raymondclowe/cadux.git
+cd cadux
+
+# Install
+uv sync
+
+# Run
+uv run main.py
+```
+
+If no config is present, the Settings dialog will appear on first launch.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Android Device / Desktop                        │
-│  ┌───────────────────────────────────────────┐  │
-│  │  Cadux (Flet UI)                          │  │
-│  │  - chat_ui.py (streaming bubbles, input)  │  │
-│  │  - ws_client.py (JSON-RPC WebSocket)      │  │
-│  │  - config.py (env → .env → local storage) │  │
-│  │  - main.py (app init, layout, settings)   │  │
-│  └──────────────┬────────────────────────────┘  │
-└─────────────────┼────────────────────────────────┘
-                  │ wss:// (TLS + X-Hermes-Auth)
-┌─────────────────┼────────────────────────────────┐
-│  Nginx Proxy    │   (Oracle Cloud / VPS)          │
-│  - TLS/SSL term │                                 │
-│  - Auth header  │                                 │
-│  enforcement    │                                 │
-└─────────────────┼────────────────────────────────┘
-                  │ ws:// localhost:3582
-┌─────────────────┼────────────────────────────────┐
-│  Hermes TUI     │                                 │
-│  Gateway        │                                 │
-│  (JSON-RPC 2.0) │                                 │
-└───────────────────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│  Android / Desktop                  │
+│  ┌──────────────────────────────┐   │
+│  │  Cadux (Flet UI)             │   │
+│  │  REST API + SSE streaming    │   │
+│  │  Bearer token auth           │   │
+│  └──────────────┬───────────────┘   │
+└─────────────────┼───────────────────┘
+                  │ HTTP (LAN or internet)
+┌─────────────────┼───────────────────┐
+│  Hermes Server  │                   │
+│  REST API       │                   │
+│  /api/sessions  │                   │
+│  /api/.../chat/ │                   │
+│  stream (SSE)   │                   │
+└─────────────────────────────────────┘
 ```
-
-## Quick Start
-
-### 1. Prerequisites
-
-- **Python 3.14+** (uses modern pattern matching, `|=` union syntax)
-- **uv** (fast Python package manager)
-- A running **Hermes** instance with WebSocket gateway enabled
-- An **Nginx** reverse proxy (or similar) exposing `wss://` with `X-Hermes-Auth` header enforcement
-
-### 2. Setup
-
-```bash
-# Clone and enter the project
-cd cadux
-
-# Create environment and install dependencies
-uv sync
-
-# Configure your connection
-cp .env.example .env
-# Edit .env with your WSS URL and secret key
-```
-
-### 3. Run (Desktop)
-
-```bash
-uv run python -m src.main
-```
-
-If no `.env` is present, a settings dialog will appear on first launch to enter the WSS URL and secret key. These are saved to local storage for subsequent launches.
-
-### 4. Build & Deploy
-
-See **[docs/build-and-deploy.md](docs/build-and-deploy.md)** for full instructions covering:
-
-- Desktop packaging (`flet pack`)
-- Android APK build (debug/release, signing, multi-arch)
-- GitHub release creation (manual + GitHub Actions CI/CD)
-
-**Quick APK build:**
-
-```bash
-flet build apk
-```
-
-The APK will be at `build/apk/debug/` or `build/apk/release/`.
 
 ## Configuration
 
 Config is resolved in this order (first found wins):
-1. Environment variables (`CADUX_WSS_URL`, `CADUX_SECRET_KEY`)
+1. Environment variables (`CADUX_API_URL`, `CADUX_SECRET_KEY`)
 2. `.env` file in project root
-3. Flet `client_storage` (saved from Settings dialog)
-
-All three must be present for the app to function — Cadux will prompt for missing values.
-
-## Protocol
-
-Cadux uses **JSON-RPC 2.0** over a single persistent WebSocket connection.
-
-| Method | Purpose |
-|---|---|
-| `session.list` | Fetch available sessions on connect |
-| `session.activate` | Switch to a different session thread |
-| `command.dispatch` | Send a user message or slash command |
-| `message.delta` | Receive streaming token chunks |
-| `message.complete` | Signal end of a response stream |
-
-Authentication is via the `X-Hermes-Auth` HTTP header on the WebSocket upgrade request.
+3. Flet `client_storage` (saved from profiles or Settings dialog)
+4. PIN-based pairing via [`paird/`](paird/) (automatic config delivery)
 
 ## Project Structure
 
 ```
 cadux/
 ├── src/
-│   ├── __init__.py          # Package marker
-│   ├── main.py              # App entry point, Flet page setup
+│   ├── main.py              # App entry, layout, drawer, profile mgmt
 │   ├── config.py            # Config loading (env → .env → storage)
-│   ├── chat_ui.py           # UI components (bubbles, input, commands)
+│   ├── chat_ui.py           # Chat bubbles, streaming, session chips
 │   ├── ws_client.py         # Hermes REST API + SSE streaming
+│   ├── pairing.py           # UDP discovery, PIN registration, decrypt
+│   └── profiles.py          # Multi-profile CRUD + persistence
+├── paird/
+│   └── server.py            # Ephemeral pairing daemon (via Hermes skill)
 ├── docs/
-│   ├── plan.md              # Implementation plan
+│   ├── pairing.md           # Hermes skill instructions for pairing
+│   ├── hermes-sse-format.md # SSE event format reference
 │   ├── spec.md              # Component specification
+│   ├── plan.md              # Implementation plan
 │   └── build-and-deploy.md  # Build, sign, release & CI/CD guide
-├── .env.example             # Template for connection config
-├── TEST_LOG.md              # Validation checklist
 ├── pyproject.toml           # Project metadata & dependencies
 └── README.md
 ```
 
 ## Features
 
-- **Streaming chat UI** — real-time token chunk rendering via `message.delta`
-- **Session management** — list, switch, and create sessions from the dropdown
-- **Auto-reconnect** — exponential backoff (1–30 s) on disconnect
-- **Persistent config** — settings saved across launches
-- **Responsive** — adapts padding for mobile, tablet, and desktop sizes
-- **Dark/Light mode** — follows system theme (overridable in settings)
+- **Streaming chat UI** — real-time token rendering via SSE `assistant.delta` events
+- **Session management** — list, switch, and create Hermes sessions
+- **Multi-profile** — save multiple Hermes connections, switch at runtime
+- **PIN pairing** — zero-config setup: Hermes gives you a 4-letter code, Cadux auto-connects
+- **Auto-reconnect** — polls sessions every 5s, reconnects on failure
+- **Responsive** — adapts for mobile, tablet, and desktop
+- **Dark/Light mode** — follows system theme
 
 ## License
 
