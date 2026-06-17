@@ -42,6 +42,20 @@ def main(page: ft.Page):
 
     page.session.store.set("_config", config)
 
+    # ── Deep link from Android intent (cadux://connect?…) ──────────
+    try:
+        initial_url = page.get_initial_url()
+    except Exception:
+        initial_url = None
+    if initial_url and initial_url.startswith("cadux://"):
+        from src.pairing import parse_deeplink, connect_from_deeplink
+        deeplink_config = parse_deeplink(initial_url)
+        if deeplink_config:
+            # If no profile set yet, use the deep link config
+            if active_profile is None:
+                page.run_task(connect_from_deeplink, page, deeplink_config)
+                return  # connect_from_deeplink will call main() again after saving
+
     # ── Refs ─────────────────────────────────────────────────────────
     status_dot = ft.Container(
         width=10,
@@ -89,9 +103,9 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "📷 Scan QR Code",
+                                "📱 Scan QR Code",
                                 icon=ft.Icons.QR_CODE_SCANNER,
-                                on_click=lambda e: _show_settings_dialog(page, active_tab=1),
+                                on_click=lambda e: page.run_task(_pairing_flow, page),
                                 style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
                             ft.TextButton(
@@ -104,7 +118,7 @@ def main(page: ft.Page):
                         spacing=8,
                     ),
                     ft.Text(
-                        "Have Hermes generate a QR code, then scan it here",
+                        "Ask Hermes to show a QR code, then scan with your phone camera",
                         size=11,
                         color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
                     ),
@@ -741,6 +755,35 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
         pass
     page.clean()
     main(page)
+
+
+async def _pairing_flow(page: ft.Page):
+    """Show QR code pairing instructions."""
+    dlg = ft.AlertDialog(
+        title=ft.Text("📱 QR Code Pairing"),
+        content=ft.Column(
+            [
+                ft.Text("1. Ask Hermes to show a QR code", size=14),
+                ft.Text("2. Open your phone camera", size=14),
+                ft.Text("3. Point at the QR code on your screen", size=14),
+                ft.Text("4. Tap the notification to open Cadux", size=14),
+                ft.Container(height=8),
+                ft.Text(
+                    "No camera? Tap Settings to enter the URL manually.",
+                    size=12, italic=True, color=ft.Colors.OUTLINE,
+                ),
+            ],
+            spacing=6,
+            tight=True,
+            width=320,
+        ),
+        actions=[ft.TextButton("Open Settings", on_click=lambda e: (
+            page.pop_dialog(),
+            _show_settings_dialog(page),
+        ) or None)],
+    )
+    page.show_dialog(dlg)
+    page.update()
 
 
 if __name__ == "__main__":
