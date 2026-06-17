@@ -47,14 +47,27 @@ def main(page: ft.Page):
         initial_url = page.get_initial_url()
     except Exception:
         initial_url = None
+    # Fallback: Flet sometimes passes deep links as the route on Android
+    if not initial_url:
+        try:
+            route = page.route
+            if route and route.startswith("/cadux://"):
+                initial_url = route[1:]  # strip leading /
+            elif route and "cadux://" in route:
+                initial_url = route.split("cadux://", 1)[1]
+                if initial_url:
+                    initial_url = "cadux://" + initial_url
+        except Exception:
+            pass
+    if initial_url:
+        logger.info("Deep link: %s", initial_url[:100] if len(initial_url) > 100 else initial_url)
     if initial_url and initial_url.startswith("cadux://"):
         from src.pairing import parse_deeplink, connect_from_deeplink
         deeplink_config = parse_deeplink(initial_url)
         if deeplink_config:
-            # If no profile set yet, use the deep link config
             if active_profile is None:
                 page.run_task(connect_from_deeplink, page, deeplink_config)
-                return  # connect_from_deeplink will call main() again after saving
+                return
 
     # ── Refs ─────────────────────────────────────────────────────────
     status_dot = ft.Container(
@@ -118,7 +131,7 @@ def main(page: ft.Page):
                         spacing=8,
                     ),
                     ft.Text(
-                        "Ask Hermes to show a QR code, then scan with your phone camera",
+                        "Have Hermes show a QR code, then scan it with your phone camera — not inside Cadux",
                         size=11,
                         color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
                     ),
@@ -576,10 +589,10 @@ async def _pairing_flow(page: ft.Page):
         title=ft.Text("📱 QR Code Pairing"),
         content=ft.Column(
             [
-                ft.Text("1. Ask Hermes to show a QR code", size=14),
-                ft.Text("2. Open your phone camera", size=14),
-                ft.Text("3. Point at the QR code on your screen", size=14),
-                ft.Text("4. Tap the notification to open Cadux", size=14),
+                ft.Text("1. Ask Hermes to show a QR code on your PC screen", size=14),
+                ft.Text("2. Open your phone's camera app (not Cadux)", size=14),
+                ft.Text("3. Point at the QR code on the screen", size=14),
+                ft.Text("4. Tap the cadux:// notification to auto-connect", size=14),
                 ft.Container(height=8),
                 ft.Text(
                     "No camera? Tap Settings to enter the URL manually.",
