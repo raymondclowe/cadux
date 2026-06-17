@@ -20,24 +20,11 @@ Download this file and save it as `docs/pairing.md` in your workspace:
 https://raw.githubusercontent.com/raymondclowe/cadux/main/docs/pairing.md
 ```
 
-## Step 3 — Help the user install the APK
+## Step 3 — Pair the phone
 
-Tell the user to download and install the Cadux Android app from:
+Tell the user to open Cadux on their phone and tap **Find Hermes**. Cadux will discover your pairing daemon on the LAN and auto-connect. No PIN or code entry needed.
 
-```
-https://github.com/raymondclowe/cadux/releases/latest/download/cadux.apk
-```
-
-Walk them through it:
-- On their Android phone, open the link in a browser
-- They may need to allow "Install from unknown sources" in Settings
-- Once installed, open Cadux — it will show a "Set Up Connection" screen
-
-## Step 4 — Pair the phone
-
-Tell the user that once they have installed the app they should : *"Say 'pair my Cadux' whenever you're ready."*
-
-When they ask you to pair, follow the instructions in `docs/pairing.md` to generate a PIN and start the pairing daemon.
+If the user asks for a manual option, tell them the LAN IP where paird is running. The **Find Hermes** button will also show a manual IP entry if auto-discovery fails.
 
 ---
 
@@ -47,9 +34,9 @@ Say this to Hermes:
 
 > **Hey Hermes, install Cadux on my phone from https://github.com/raymondclowe/cadux/**
 
-Then follow Hermes's instructions to download and install the APK.
+Then follow Hermes's instructions to download the APK onto your phone and install it.
 
-Once installed, tell Hermes: **"pair my Cadux"** — Hermes will give you a short code to type into the Cadux app. No typing long secret keys.
+Once installed, open Cadux and tap **Find Hermes** — it will find the pairing daemon on your LAN and connect automatically.
 
 ---
 

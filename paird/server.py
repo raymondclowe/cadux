@@ -3,19 +3,20 @@ Cadux Pairing Daemon — ephemeral companion server for Hermes.
 
 Runs at the user's command (via Hermes agent skill), not as a daemon.
 Binds for a configurable TTL (default 60 s), then exits.
-When --pin is set, any POST /register with matching PIN immediately
-returns the encrypted Hermes config — no polling needed.
 
-Quick start on Hermes host (via Hermes agent skill):
+NEW SIMPLE FLOW (no PIN needed):
+  Hermes starts paird → Cadux taps "Find Hermes" → auto-connects
+
+Quick start on Hermes host:
     cd paird
-    CADUX_API_URL=http://localhost:8642 CADUX_SECRET_KEY=your-key \\
-        uv run server.py --ttl 60 --pin K47M
+    CADUX_API_URL=http://localhost:8642 CADUX_SECRET_KEY=sk-... \
+        uv run server.py
 
 Endpoints:
     GET  /discover      JSON identity for auto-discovery
-    POST /register      Register with PIN → {session_id, status,
-                          config_encrypted, md5_sig}
-    GET  /session/{id}  Poll for session state
+    GET  /config        Returns config directly (no PIN, no encrypt)
+    POST /register      PIN mode only — register with code → encrypted config
+    GET  /session/{id}  Poll session state
 """
 
 import argparse
@@ -38,19 +39,16 @@ logger = logging.getLogger("paird")
 
 # ── Globals ──────────────────────────────────────────────────────────
 
-_PREAUTHORIZED_PIN: str | None = None  # set via --pin CLI arg
-_TTL: int = 60                          # seconds before auto-exit
-_sessions: dict[str, dict] = {}         # session_id -> {config, created_at, status, …}
-_claim_event: threading.Event | None = None  # set when a claim succeeds
+_PREAUTHORIZED_PIN: str | None = None
+_TTL: int = 60
+_sessions: dict[str, dict] = {}
+_claim_event: threading.Event | None = None
 _shutdown_called = False
 
-# ── Helpers ──────────────────────────────────────────────────────────
-
-_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no I/O/0/1 for readability
+_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
 def _get_local_ip() -> str:
-    """Best-effort local LAN IP."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
@@ -63,7 +61,6 @@ def _get_local_ip() -> str:
 
 
 def _load_server_config() -> dict:
-    """Load the Hermes API URL and key from the environment."""
     api_url = os.environ.get(
         "CADUX_API_URL", os.environ.get("HERMES_API_URL", "http://localhost:8642")
     )
@@ -82,27 +79,33 @@ def _load_server_config() -> dict:
 
 
 def _encrypt(data: bytes, password: str) -> tuple[str, str]:
-    """XOR-encrypt with a SHA256-derived key.
-    Returns (base64_encrypted, md5_of_plaintext).
-    """
     key = hashlib.sha256(password.encode()).digest()
     enc = bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
     md5_sig = hashlib.md5(data).hexdigest()
     return base64.b64encode(enc).decode(), md5_sig
 
 
-def _decrypt(encoded: str, password: str) -> bytes:
-    """XOR-decrypt with a SHA256-derived key."""
-    key = hashlib.sha256(password.encode()).digest()
-    raw = base64.b64decode(encoded)
-    return bytes(raw[i] ^ key[i % len(key)] for i in range(len(raw)))
+# ── CORS Middleware (needed for Cadux HTTP probe) ────────────────────
+
+
+@web.middleware
+async def cors_middleware(request, handler):
+    """Allow cross-origin requests from any origin (LAN-only)."""
+    if request.method == "OPTIONS":
+        resp = web.Response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+    resp = await handler(request)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 
 # ── UDP Broadcast Responder ─────────────────────────────────────────
 
 
 async def _udp_responder(udp_bind_port: int, http_port: int):
-    """Listen for UDP broadcasts and respond to CADUX_DISCOVER pings."""
     loop = asyncio.get_running_loop()
     transport: asyncio.DatagramTransport | None = None
 
@@ -146,8 +149,20 @@ async def handle_discover(request):
     })
 
 
+async def handle_config(request):
+    """GET /config — return Hermes config directly (no PIN, plain JSON).
+    
+    This is the simple path: Cadux discovers paird, hits /config,
+    gets {api_url, secret_key}, saves as profile. Done.
+    """
+    config = _load_server_config()
+    if not config["secret_key"]:
+        return web.json_response({"error": "CADUX_SECRET_KEY not set"}, status=503)
+    return web.json_response(config)
+
+
 async def handle_register(request):
-    """Register with a PIN. If PIN matches --pin, returns ready config immediately."""
+    """POST /register — PIN mode. Returns encrypted config on PIN match."""
     global _shutdown_called
 
     config = _load_server_config()
@@ -158,53 +173,48 @@ async def handle_register(request):
     except Exception:
         pass
 
+    # If no PIN set on server, this acts like /config but via POST (backward compat)
+    if _PREAUTHORIZED_PIN is None:
+        # No-PIN mode: return config directly
+        if not config["secret_key"]:
+            return web.json_response({"error": "CADUX_SECRET_KEY not set"}, status=503)
+        session_id = str(uuid.uuid4())
+        _sessions[session_id] = {"config": config, "created_at": time.time(), "status": "ready"}
+        logger.info("No-PIN claim — session %s", session_id[:8])
+        return web.json_response({"session_id": session_id, "status": "ready", **config})
+
     if not pin:
         return web.json_response({"error": "Missing code"}, status=400)
 
-    # PIN-preauthorize mode
-    if _PREAUTHORIZED_PIN is not None:
-        if pin != _PREAUTHORIZED_PIN:
-            return web.json_response({"error": "Wrong code"}, status=403)
+    if pin != _PREAUTHORIZED_PIN:
+        return web.json_response({"error": "Wrong code"}, status=403)
 
-        # PIN matches — encrypt and return config immediately
-        session_id = str(uuid.uuid4())
-        config_json = json.dumps(config).encode()
-        config_encrypted, md5_sig = _encrypt(config_json, pin)
-
-        _sessions[session_id] = {
-            "config": config,
-            "created_at": time.time(),
-            "status": "ready",
-            "config_encrypted": config_encrypted,
-            "md5_sig": md5_sig,
-        }
-
-        logger.info("Pairing claimed — session %s", session_id[:8])
-
-        # Signal early exit
-        if _claim_event is not None:
-            _claim_event.set()
-
-        return web.json_response({
-            "session_id": session_id,
-            "status": "ready",
-            "config_encrypted": config_encrypted,
-            "md5_sig": md5_sig,
-        })
-
-    # Fallback (no PIN set): create waiting session
     session_id = str(uuid.uuid4())
+    config_json = json.dumps(config).encode()
+    config_encrypted, md5_sig = _encrypt(config_json, pin)
+
     _sessions[session_id] = {
         "config": config,
         "created_at": time.time(),
-        "status": "waiting",
+        "status": "ready",
+        "config_encrypted": config_encrypted,
+        "md5_sig": md5_sig,
     }
-    logger.info("Registration (no PIN mode) — session %s", session_id[:8])
-    return web.json_response({"session_id": session_id, "status": "waiting"})
+
+    logger.info("PIN claim — session %s", session_id[:8])
+
+    if _claim_event is not None:
+        _claim_event.set()
+
+    return web.json_response({
+        "session_id": session_id,
+        "status": "ready",
+        "config_encrypted": config_encrypted,
+        "md5_sig": md5_sig,
+    })
 
 
 async def handle_session_status(request):
-    """Poll session state."""
     session_id = request.match_info["session"]
     session = _sessions.get(session_id)
     if not session or (time.time() - session["created_at"]) > _TTL:
@@ -214,23 +224,19 @@ async def handle_session_status(request):
     if status == "waiting":
         return web.json_response({"status": "waiting"})
 
-    return web.json_response({
-        "status": "ready",
-        "config_encrypted": session["config_encrypted"],
-        "md5_sig": session["md5_sig"],
-    })
+    resp = {"status": "ready"}
+    if "config_encrypted" in session:
+        resp["config_encrypted"] = session["config_encrypted"]
+        resp["md5_sig"] = session["md5_sig"]
+    if "config" in session and _PREAUTHORIZED_PIN is None:
+        resp.update(session["config"])
+    return web.json_response(resp)
 
 
-# ── TTL Timer (threading-based to avoid Windows asyncio issue) ───────
+# ── TTL Timer ───────────────────────────────────────────────────────
 
 
 def _start_ttl_timer():
-    """Exit the process after TTL seconds, or early if claimed.
-
-    Uses a timer thread instead of an asyncio task because creating
-    long-lived background tasks during ``on_startup`` prevents the
-    aiohttp TCP server from binding on Windows + Python 3.14.
-    """
     global _shutdown_called
 
     def _wait_and_exit():
@@ -238,7 +244,7 @@ def _start_ttl_timer():
         poll_interval = 0.5
         elapsed = 0.0
         while elapsed < _TTL:
-            if _claim_event.is_set():
+            if _claim_event and _claim_event.is_set():
                 break
             time.sleep(poll_interval)
             elapsed += poll_interval
@@ -259,15 +265,19 @@ def main():
 
     parser = argparse.ArgumentParser(description="Cadux ephemeral pairing daemon")
     parser.add_argument("--ttl", type=int, default=60, help="Seconds before auto-exit (default: 60)")
-    parser.add_argument("--pin", type=str, default=None, help="Pre-authorized PIN code")
+    parser.add_argument("--pin", type=str, default=None, help="Pre-authorized PIN code (optional)")
     args = parser.parse_args()
 
     _TTL = args.ttl
-    _PREAUTHORIZED_PIN = args.pin.upper().strip() if args.pin else None
-    _claim_event = threading.Event()
+    if args.pin:
+        _PREAUTHORIZED_PIN = args.pin.upper().strip()
+        _claim_event = threading.Event()
+        logger.info("PIN mode — code: %s", _PREAUTHORIZED_PIN)
+    else:
+        logger.info("No-PIN mode — any Cadux on the LAN can fetch config")
 
     port = int(os.environ.get("PAIRD_PORT", "8643"))
-    udp_port = int(os.environ.get("PAIRD_UDP_PORT", str(port - 1)))  # default: one less than HTTP
+    udp_port = int(os.environ.get("PAIRD_UDP_PORT", str(port - 1)))
 
     config = _load_server_config()
     if config["secret_key"]:
@@ -275,23 +285,15 @@ def main():
     else:
         logger.warning("No CADUX_SECRET_KEY found! Pairing will produce unusable config.")
 
-    if _PREAUTHORIZED_PIN:
-        logger.info("PIN mode active — code: %s", _PREAUTHORIZED_PIN)
-    else:
-        logger.info("No PIN set — register will create waiting sessions")
-
-    app = web.Application()
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/discover", handle_discover)
+    app.router.add_get("/config", handle_config)
     app.router.add_post("/register", handle_register)
     app.router.add_get("/session/{session}", handle_session_status)
 
-    # Start UDP responder as a fast startup task (completes quickly)
     app.on_startup.append(lambda _: asyncio.create_task(_udp_responder(udp_port, port)))
 
     logger.info("Pairing daemon starting on port %d (TTL: %d s, UDP: %d)", port, _TTL, udp_port)
-
-    # Start TTL via thread (Windows asyncio issue: long-lived background
-    # tasks in on_startup block the TCP server from binding)
     _start_ttl_timer()
 
     try:

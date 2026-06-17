@@ -1,19 +1,18 @@
-"""Cadux pairing — LAN discovery, PIN registration, config decryption.
+"""Cadux pairing — LAN discovery + auto-connect.
 
-Handles the Cadux side of the ephemeral PIN pairing flow:
-  1. Discover paird on the LAN via UDP broadcast
-  2. Register with the PIN the user typed
-  3. Decrypt and verify the returned Hermes config
-  4. Save as a profile and trigger connect
+Single-tap flow: discover paird on LAN → fetch config → create profile.
+
+Discovery tries in order:
+  1. UDP broadcast (fast, ~1s)
+  2. HTTP subnet probe (scans LAN IPs, ~3-4s)
 """
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import socket
 
+import aiohttp
 import flet as ft
 
 from src.profiles import create_profile, set_active_profile_id
@@ -22,235 +21,226 @@ logger = logging.getLogger(__name__)
 
 _PAIRD_PORT = 8643
 _UDP_BROADCAST_MSG = b"CADUX_DISCOVER"
-_UDP_TIMEOUT = 3.0
 
 
-# ── Decryption (mirrors paird/server.py) ──────────────────────────────
+# ── LAN IP Detection ────────────────────────────────────────────────
 
 
-def decrypt_config(encrypted_b64: str, password: str, expected_md5: str | None = None) -> dict | None:
-    """XOR-decrypt a config blob with the given password.
-
-    Returns ``{api_url, secret_key}`` on success, or ``None`` if
-    verification fails.
-    """
-    key = hashlib.sha256(password.upper().encode()).digest()
-    raw = base64.b64decode(encrypted_b64)
-    plain = bytes(raw[i] ^ key[i % len(key)] for i in range(len(raw)))
-
-    if expected_md5:
-        actual_md5 = hashlib.md5(plain).hexdigest()
-        if actual_md5 != expected_md5:
-            logger.warning("MD5 mismatch — expected %s, got %s", expected_md5, actual_md5)
-            return None
-
-    config = json.loads(plain)
-    return {"api_url": config["api_url"], "secret_key": config["secret_key"]}
+def _get_local_ip() -> str | None:
+    """Get the device's LAN IP by attempting a UDP connection."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        s.connect(("192.168.0.1", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
 
 
-# ── LAN Discovery via UDP Broadcast ──────────────────────────────────
-
-
-async def discover_paird(timeout: float = _UDP_TIMEOUT, target_ip: str | None = None) -> dict | None:
-    """Discover a Cadux paird instance on the LAN.
-
-    Sends a ``CADUX_DISCOVER`` UDP broadcast to port 8643.
-    If *target_ip* is provided, sends directly to that IP instead.
-
-    Returns ``{"host": ip, "port": port}`` or ``None``.
-    """
-    loop = asyncio.get_running_loop()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(timeout)
-
-    if target_ip:
-        sock.sendto(_UDP_BROADCAST_MSG, (target_ip, _PAIRD_PORT))
-    else:
-        sock.sendto(_UDP_BROADCAST_MSG, ("255.255.255.255", _PAIRD_PORT))
-
-    start = loop.time()
-    while (loop.time() - start) < timeout:
-        try:
-            data = await loop.sock_recv(sock, 1024)
-            # sock_recv may return (data, addr) on Unix or just data on Windows
-            if isinstance(data, tuple):
-                data, addr = data
-            info = json.loads(data.decode())
-            if info.get("service") == "cadux-paird":
-                host = info.get("host") or "127.0.0.1"
-                port = info.get("port", _PAIRD_PORT)
-                sock.close()
-                return {"host": host, "port": port}
-        except (socket.timeout, json.JSONDecodeError, UnicodeDecodeError, OSError):
-            continue
-
-    sock.close()
+def _subnet_from_ip(ip: str) -> str | None:
+    """Extract subnet prefix, e.g. '192.168.0' from '192.168.0.70'."""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return ".".join(parts[:3])
     return None
 
 
-# ── Registration with paird ──────────────────────────────────────────
+# ── Phase 1: UDP Broadcast ──────────────────────────────────────────
 
 
-async def register_with_paird(host: str, port: int, pin: str) -> dict:
-    """POST /register to paird with the PIN.
+async def _udp_discover(timeout: float = 2.0, target_ip: str | None = None) -> dict | None:
+    """Sends CADUX_DISCOVER UDP broadcast and waits for a response."""
+    loop = asyncio.get_running_loop()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(timeout)
 
-    Returns the response dict. Success looks like:
-    ``{"session_id": "...", "status": "ready",
-       "config_encrypted": "...", "md5_sig": "..."}``
+        dest = (target_ip, _PAIRD_PORT) if target_ip else ("255.255.255.255", _PAIRD_PORT)
+        sock.sendto(_UDP_BROADCAST_MSG, dest)
+
+        start = loop.time()
+        while (loop.time() - start) < timeout:
+            try:
+                data, addr = sock.recvfrom(1024)
+                info = json.loads(data.decode())
+                if info.get("service") == "cadux-paird":
+                    host = info.get("host") or addr[0]
+                    port = info.get("port", _PAIRD_PORT)
+                    sock.close()
+                    return {"host": host, "port": port}
+            except (socket.timeout, json.JSONDecodeError, UnicodeDecodeError, OSError):
+                continue
+        sock.close()
+    except Exception:
+        return None
+    return None
+
+
+# ── Phase 2: HTTP Subnet Probe ──────────────────────────────────────
+
+
+async def _probe_host(session: aiohttp.ClientSession, ip: str, port: int) -> dict | None:
+    """Try GET /discover on one host. Returns {host, port} if paird responds."""
+    try:
+        async with session.get(f"http://{ip}:{port}/discover", timeout=aiohttp.ClientTimeout(total=0.5)) as resp:
+            if resp.status == 200:
+                body = await resp.json()
+                if body.get("service") == "cadux-paird":
+                    return {"host": ip, "port": port}
+    except Exception:
+        pass
+    return None
+
+
+async def _http_subnet_probe(subnet: str, port: int = _PAIRD_PORT, timeout: float = 4.0) -> dict | None:
+    """Probe IPs in a /24 subnet for paird.
+
+    Tries likely servers first (x.x.x.2-20), then the rest.
+    Scans quickly with asyncio.wait + short per-request timeout.
     """
-    import aiohttp
+    connector = aiohttp.TCPConnector(force_close=True, limit=30, limit_per_host=1)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        # Priority IPs: skip .0 (network), .1 (gateway), .255 (broadcast)
+        priority = [f"{subnet}.{i}" for i in range(2, 21)]
+        rest = [f"{subnet}.{i}" for i in range(21, 255)]
 
+        for ip_list in (priority, rest):
+            tasks = [_probe_host(session, ip, port) for ip in ip_list]
+            done, _ = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                result = task.result()
+                if result:
+                    return result
+            if done:
+                return None
+    return None
+
+
+# ── Fetch Config from paird ─────────────────────────────────────────
+
+
+async def _fetch_config(host: str, port: int) -> dict | None:
+    """GET /config from paird. Returns {api_url, secret_key} or None."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(f"http://{host}:{port}/register", json={"code": pin}) as resp:
-                body = await resp.json()
+            async with session.get(f"http://{host}:{port}/config", timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status == 200:
-                    return body
-                if resp.status == 403:
-                    return {"error": "wrong_code"}
-                return body | {"error": body.get("error", "unknown")}
-    except (aiohttp.ClientConnectorError, OSError):
-        return {"error": "not_found"}
-    except Exception as exc:
-        return {"error": str(exc)}
+                    body = await resp.json()
+                    if body.get("api_url") and body.get("secret_key"):
+                        return body
+    except Exception:
+        pass
+    return None
 
 
-# ── Full Pairing Flow ────────────────────────────────────────────────
+# ── Full Auto-Discovery + Connect ───────────────────────────────────
 
 
-async def pairing_flow(page: ft.Page) -> bool:
-    """Orchestrate the full pairing flow inside a modal dialog.
+async def discover_and_connect(page: ft.Page) -> bool:
+    """Discover paird on LAN and auto-connect.
 
-    1. Discovers paird on the LAN via UDP broadcast
-    2. Shows PIN entry UI
-    3. Registers with PIN
-    4. Decrypts config
-    5. Saves as a profile → caller rebuilds UI
-
-    Returns True on success, False on failure.
+    Shows a modal dialog with progress. Returns True on success.
+    One-tap from the user's perspective.
     """
-    status_text = ft.Text("Searching for Hermes on your local network…", size=14)
+    status_text = ft.Text("Finding Hermes on your network…", size=14)
     spinner = ft.ProgressRing(width=24, height=24)
     error_text = ft.Text("", size=13, color=ft.Colors.ERROR)
-    manual_ip = ft.TextField(label="IP Address", hint_text="e.g. 192.168.0.83", width=280, visible=False)
-    manual_link = ft.TextButton("Enter Manually", visible=False)
+    manual_ip = ft.TextField(label="IP Address", hint_text="e.g. 192.168.0.83", width=280)
+    manual_button = ft.ElevatedButton("Connect to this IP")
 
     content_col = ft.Column(
         [ft.Row([spinner, status_text], spacing=10)],
         spacing=10, tight=True, width=360,
     )
 
-    dialog = ft.AlertDialog(title=ft.Text("📱 Set Up Connection"), content=content_col)
+    dialog = ft.AlertDialog(title=ft.Text("🔗 Connect to Hermes"), content=content_col)
     page.show_dialog(dialog)
     page.update()
 
-    # ── Discover paird ──────────────────────────────────────────────
-    paird = await discover_paird()
+    # ── Phase 1: UDP broadcast ──────────────────────────────────
+    paird = await _udp_discover(timeout=1.5)
 
+    # ── Phase 2: HTTP subnet probe ──────────────────────────────
     if paird is None:
-        status_text.value = "Could not find Hermes on your network."
+        local_ip = _get_local_ip()
+        subnet = _subnet_from_ip(local_ip) if local_ip else None
+        if subnet:
+            status_text.value = f"Scanning {subnet}.x…"
+            page.update()
+            paird = await _http_subnet_probe(subnet, timeout=3.0)
+
+    # ── Result ──────────────────────────────────────────────────
+    if paird is None:
+        status_text.value = "Could not find Hermes on your network"
         status_text.color = ft.Colors.ERROR
         spinner.visible = False
 
-        async def _retry_manual(e):
+        async def _try_manual(e):
             ip = manual_ip.value.strip()
             if not ip:
                 return
             status_text.value = f"Checking {ip}:{_PAIRD_PORT}…"
             status_text.color = ft.Colors.ON_SURFACE
             spinner.visible = True
-            manual_ip.visible = False
-            manual_link.visible = False
-            error_text.value = ""
             page.update()
-            found = await discover_paird(target_ip=ip)
+            found = await _udp_discover(target_ip=ip, timeout=1.0)
             if found is None:
-                status_text.value = f"No response from {ip}:{_PAIRD_PORT}."
+                found = await _probe_host(
+                    aiohttp.ClientSession(), ip, _PAIRD_PORT
+                ) if ip else None
+            if found is None:
+                status_text.value = f"No response from {ip}:{_PAIRD_PORT}"
                 status_text.color = ft.Colors.ERROR
                 spinner.visible = False
-                manual_ip.visible = True
-                manual_link.visible = True
                 page.update()
                 return
-            await _show_pin_entry(page, dialog, content_col, found, status_text, spinner, error_text, manual_ip, manual_link)
+            await _do_connect(page, found, status_text, spinner, error_text)
 
-        manual_btn = ft.ElevatedButton("Try Manual IP")
-        manual_btn.on_click = lambda e: page.run_task(_retry_manual, e)
-        manual_link.on_click = lambda e: (
-            setattr(manual_ip, "visible", True)
-            or setattr(manual_link, "visible", False)
-            or page.update()
-        )
-        manual_link.visible = True
-
-        content_col.controls = [status_text, error_text, manual_ip, manual_btn, manual_link]
+        manual_button.on_click = lambda e: page.run_task(_try_manual, e)
+        content_col.controls = [status_text, error_text, manual_ip, manual_button]
         page.update()
         return False
 
-    return await _show_pin_entry(page, dialog, content_col, paird, status_text, spinner, error_text, manual_ip, manual_link)
+    return await _do_connect(page, paird, status_text, spinner, error_text)
 
 
-async def _show_pin_entry(page, dialog, content_col, paird, status_text, spinner, error_text, manual_ip, manual_link):
-    """Show PIN entry after discovery success."""
+async def _do_connect(page, paird, status_text, spinner, error_text) -> bool:
+    """Fetch config from paird and save as profile."""
     host, port = paird["host"], paird["port"]
-    status_text.value = f"Found Hermes at {host}"
+    status_text.value = f"Connecting to {host}…"
     status_text.color = ft.Colors.GREEN
-    spinner.visible = False
+    page.update()
 
-    from src.chat_ui import build_pin_entry
-
-    async def _on_pin_submit(pin: str):
-        status_text.value = f"Connecting to {host}:{port}…"
-        status_text.color = ft.Colors.ON_SURFACE
-        error_text.value = ""
-        page.update()
-
-        result = await register_with_paird(host, port, pin)
-
-        if result.get("error") == "wrong_code":
-            error_text.value = "Wrong code — check the code Hermes gave you"
-            page.update()
-            return
-
-        if result.get("error") or result.get("status") != "ready":
-            error_text.value = f"Pairing failed: {result.get('error', 'unknown')}"
-            manual_ip.visible = True
-            manual_link.visible = True
-            page.update()
-            return
-
-        encrypted = result.get("config_encrypted", "")
-        md5_sig = result.get("md5_sig", "")
-        config = decrypt_config(encrypted, pin, md5_sig)
-        if config is None:
-            error_text.value = "Could not decrypt config — try again"
-            page.update()
-            return
-
-        # Save profile and reconnect
-        profile = create_profile(
-            page, name=f"Hermes ({host})",
-            api_url=config["api_url"],
-            secret_key=config["secret_key"],
-        )
-        set_active_profile_id(page, profile.id)
-
-        status_text.value = "✅ Connected!"
-        status_text.color = ft.Colors.GREEN
+    config = await _fetch_config(host, port)
+    if config is None:
+        status_text.value = f"Connected to {host} but couldn't get config"
+        status_text.color = ft.Colors.ERROR
         spinner.visible = False
         page.update()
+        return False
 
-        await asyncio.sleep(0.8)
-        try:
-            page.pop_dialog()
-        except Exception:
-            pass
-        page.clean()
-        from src.main import main
-        main(page)
+    # Save as profile and connect
+    profile = create_profile(
+        page, name=f"Hermes ({host})",
+        api_url=config["api_url"],
+        secret_key=config["secret_key"],
+    )
+    set_active_profile_id(page, profile.id)
 
-    pin_widget = build_pin_entry(page=page, on_submit=_on_pin_submit)
-    content_col.controls = [status_text, pin_widget, error_text]
+    status_text.value = "✅ Connected!"
+    status_text.color = ft.Colors.GREEN
+    spinner.visible = False
     page.update()
+
+    await asyncio.sleep(0.8)
+    try:
+        page.pop_dialog()
+    except Exception:
+        pass
+    page.clean()
+    from src.main import main
+    main(page)
     return True

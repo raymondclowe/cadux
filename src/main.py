@@ -78,7 +78,7 @@ def main(page: ft.Page):
                         [
                             ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=ft.Colors.ON_ERROR_CONTAINER),
                             ft.Text(
-                                "Not configured — open Settings or use a pairing method",
+                                "Not configured yet",
                                 size=13,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                                 expand=True,
@@ -89,19 +89,24 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "🔍 LAN Scan",
+                                "🔍 Find Hermes",
                                 icon=ft.Icons.SEARCH,
                                 on_click=lambda e: page.run_task(_pairing_flow, page),
                                 style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
-                            ft.OutlinedButton(
-                                "📱 QR Code",
-                                icon=ft.Icons.QR_CODE_SCANNER,
+                            ft.TextButton(
+                                "Settings",
+                                icon=ft.Icons.SETTINGS,
                                 on_click=lambda e: _show_settings_dialog(page),
                                 style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
                         ],
                         spacing=8,
+                    ),
+                    ft.Text(
+                        "Make sure Hermes is running paird on your network",
+                        size=11,
+                        color=ft.Colors.ON_ERROR_CONTAINER.with_opacity(0.7),
                     ),
                 ],
                 spacing=6,
@@ -737,265 +742,14 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
     main(page)
 
 
-# ── Auto-Pairing Flow ────────────────────────────────────────────────
+# ── Pairing Flow ────────────────────────────────────────────────────
 
 
 async def _pairing_flow(page: ft.Page):
-    """Scan LAN → register → poll (waiting for Hermes) → 6-code grid → decrypt locally."""
+    """Find paird on LAN and auto-connect — single tap flow."""
+    from src.pairing import discover_and_connect
 
-    # ── Phase 1: scan LAN ────────────────────────────────────────────
-    cancelled = False
-
-    scan_progress = ft.ProgressBar(width=260, value=0)
-    scan_label = ft.Text("Scanning local network… 0 / 255", size=13)
-    scan_spinner = ft.ProgressRing(width=20, height=20)
-
-    scan_content = ft.Column(
-        [
-            ft.Row([scan_spinner, scan_label], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ft.Container(height=6),
-            scan_progress,
-        ],
-        spacing=4,
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        tight=True,
-        width=300,
-    )
-
-    def _on_cancel_scan(e):
-        nonlocal cancelled
-        cancelled = True
-
-    scan_dlg = ft.AlertDialog(
-        title=ft.Text("🔍 Finding Hermes…", text_align=ft.TextAlign.CENTER),
-        content=scan_content,
-        actions=[ft.TextButton("Cancel", on_click=_on_cancel_scan)],
-    )
-    page.show_dialog(scan_dlg)
-    page.update()
-
-    from src.pairing import scan, PairingSession
-
-    def _on_progress(completed: int, total: int):
-        nonlocal cancelled
-        if cancelled:
-            return
-        try:
-            scan_label.value = f"Scanning local network… {completed} / {total}"
-            scan_progress.value = completed / total if total else 0
-            page.update()
-        except Exception:
-            pass
-
-    servers = await scan(timeout=15.0, progress_callback=_on_progress)
-    if cancelled or not servers:
-        page.pop_dialog()
-        if not cancelled:
-            _show_error_dialog(page, "No pairing servers found.\nMake sure paird is running on the Hermes host (port 8643).")
-        return
-
-    from aiohttp import ContentTypeError
-
-    # ── Phase 2: register with paird (try servers in order) ─────────
-    session = None
-    for srv in servers:
-        url = srv["url"]
-        try:
-            candidate = PairingSession(url)
-            await candidate.register()
-            session = candidate
-            logger.info("Registered with paird at %s", url)
-            break
-        except ContentTypeError:
-            logger.warning("Server %s doesn't support /register (old paird?)", url)
-            await candidate.close()
-            continue
-        except Exception as e:
-            logger.warning("Failed to register with %s: %s", url, e)
-            await candidate.close()
-            continue
-
-    if session is None:
-        page.pop_dialog()
-        _show_error_dialog(
-            page,
-            "Found paird servers but none accepted registration.\n"
-            "Make sure paird is up-to-date (v2) on the Hermes host.\n"
-            "Run: git pull && uv run paird/server.py",
-        )
-        return
-
-    # ── Phase 3: show "waiting for Hermes" spinner ───────────────────
-    waiting_text = ft.Text(
-        "Ask Hermes:  \"Pair with cadux\"",
-        size=14,
-        text_align=ft.TextAlign.CENTER,
-    )
-    spinner = ft.ProgressRing(width=32, height=32)
-    cancel_btn = ft.TextButton(
-        "Cancel",
-        on_click=lambda e: page.run_task(_cancel_pairing, page, session),
-    )
-
-    wait_dlg = ft.AlertDialog(
-        title=ft.Text("⏳ Waiting for Hermes", text_align=ft.TextAlign.CENTER),
-        content=ft.Column(
-            [spinner, ft.Container(height=8), waiting_text],
-            spacing=4,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            tight=True,
-            width=280,
-        ),
-        actions=[cancel_btn],
-    )
-    page.pop_dialog()  # remove scan dialog
-    page.show_dialog(wait_dlg)
-    page.update()
-
-    # ── Phase 4: poll until Hermes initiates ─────────────────────────
-    try:
-        result = await session.poll(timeout=120.0)
-    except Exception as exc:
-        logger.error("Poll failed: %s", exc)
-        result = None
-    if result is None:
-        page.pop_dialog()
-        _show_error_dialog(page, "Timed out waiting for Hermes.\nSay \"Pair with cadux\" and try again.")
-        await session.close()
-        return
-
-    codes: list[str] = result["codes"]
-
-    # ── Phase 5: show 6 codes in 2×3 grid ────────────────────────────
-    status_text = ft.Text(
-        "Tap the code that Hermes shows",
-        size=13,
-        color=ft.Colors.ON_SURFACE_VARIANT,
-        text_align=ft.TextAlign.CENTER,
-    )
-    result_text = ft.Text("", size=14, text_align=ft.TextAlign.CENTER)
-
-    async def _on_tap_code(code):
-        """User tapped a code — try decrypt locally with MD5 check."""
-        nonlocal session
-        config = session.try_code(code)
-
-        if config is not None:
-            # ✅ Correct code
-            result_text.value = "✅ Paired!"
-            result_text.color = ft.Colors.PRIMARY
-            page.update()
-            await asyncio.sleep(0.6)
-
-            # Save config + create profile
-            try:
-                page.session.store.set("api_url", config["api_url"])
-                page.session.store.set("secret_key", config["secret_key"])
-            except AttributeError:
-                pass
-
-            # Create a profile if none exists yet
-            active_p = get_active_profile(page)
-            if active_p is None:
-                profile = create_profile(page, "From Pairing", config["api_url"], config["secret_key"])
-                set_active_profile_id(page, profile.id)
-
-            page.pop_dialog()
-            await session.close()
-
-            # ── Phase 5b: post-pairing confirmation to Hermes ──
-            _send_pairing_confirmation(page, config)
-
-            # Rebuild UI with config active
-            page.clean()
-            main(page)
-        else:
-            # ❌ Wrong code — flash red
-            result_text.value = "❌ Wrong code — try another"
-            result_text.color = ft.Colors.ERROR
-            page.update()
-            await asyncio.sleep(0.5)
-            result_text.value = ""
-            page.update()
-
-    def _make_code_button(code):
-        return ft.Container(
-            content=ft.Text(code, size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-            width=90,
-            height=72,
-            border_radius=14,
-            bgcolor=ft.Colors.PRIMARY,
-            alignment=ft.alignment.Alignment.CENTER,
-            on_click=lambda e, c=code: page.run_task(_on_tap_code, c),
-            ink=True,
-        )
-
-    # Build 2×3 grid: two rows of 3
-    code_buttons = [_make_code_button(c) for c in codes]
-    code_grid = ft.Column(
-        [
-            ft.Row(code_buttons[0:3], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
-            ft.Container(height=8),
-            ft.Row(code_buttons[3:6], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
-        ],
-        spacing=0,
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-    )
-
-    pair_dlg = ft.AlertDialog(
-        title=ft.Text("📱 Pick the matching code", text_align=ft.TextAlign.CENTER, size=16),
-        content=ft.Column(
-            [
-                code_grid,
-                ft.Container(height=6),
-                status_text,
-                result_text,
-            ],
-            spacing=4,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            tight=True,
-            width=340,
-        ),
-        actions=[ft.TextButton("Cancel", on_click=lambda e: page.run_task(_cancel_pairing, page, session))],
-    )
-
-    page.pop_dialog()  # remove waiting dialog
-    page.show_dialog(pair_dlg)
-    page.update()
-
-
-async def _cancel_pairing(page: ft.Page, session):
-    await session.close()
-    try:
-        page.pop_dialog()
-    except Exception:
-        pass
-
-
-def _send_pairing_confirmation(page: ft.Page, config: dict):
-    """Fire-and-forget POST to Hermes announcing successful pairing."""
-    import urllib.request
-    import json
-
-    api_url = config.get("api_url", "").rstrip("/")
-    secret = config.get("secret_key", "")
-    if not api_url or not secret:
-        return
-
-    try:
-        req = urllib.request.Request(
-            f"{api_url}/chat/message",
-            method="POST",
-            data=json.dumps({"message": "This is Cadux, pairing successful."}).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {secret}",
-            },
-        )
-        # Non-blocking: fire and forget
-        urllib.request.urlopen(req, timeout=3.0)
-    except Exception:
-        pass  # best-effort
+    await discover_and_connect(page)
 
 
 def _show_error_dialog(page: ft.Page, message: str):
