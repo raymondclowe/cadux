@@ -485,15 +485,8 @@ async def _delete_current_profile(page: ft.Page):
 # ── Settings Dialog ──────────────────────────────────────────────────
 
 
-def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None, active_tab: int = 1):
-    """Show settings dialog.
-
-    If *edit_profile* is given, the dialog pre-fills fields from that profile
-    and updates it on save instead of creating a new one.
-
-    *active_tab*: 0 = Manual, 1 = QR Code (default).
-    """
-    # ── Tab 1: Manual entry ──────────────────────────────────────────
+def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None):
+    """Show simplified settings dialog — manual entry only."""
     profile_name = edit_profile.name if edit_profile else ""
     url_field = ft.TextField(
         label="API URL",
@@ -523,197 +516,17 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         if url and key:
             _save_config(page, url, key, name, edit_profile=edit_profile)
 
-    manual_tab = ft.Column(
-        [name_field, url_field, key_field],
-        spacing=12,
-        tight=True,
-    )
-
-    # ── Tab 2: QR code scan / paste ────────────────────────────────
-    qr_blob_field = ft.TextField(
-        label="Encrypted Config (paste from QR scan)",
-        value="",
-        multiline=True,
-        min_lines=3,
-        max_lines=6,
-        width=350,
-        hint_text="Paste the base64 blob you scanned from the QR code",
-        text_size=11,
-    )
-    qr_code_field = ft.TextField(
-        label="Decryption Code",
-        value="",
-        width=180,
-        hint_text="e.g. K47M",
-        text_size=14,
-    )
-    qr_result_text = ft.Text("", size=13, text_align=ft.TextAlign.CENTER)
-
-    async def _on_qr_decrypt(e):
-        from src.pairing import decrypt_blob
-
-        blob = qr_blob_field.value.strip()
-        code = qr_code_field.value.strip()
-        if not blob or not code:
-            qr_result_text.value = "❌ Fill in both fields"
-            qr_result_text.color = ft.Colors.ERROR
-            page.update()
-            return
-
-        config = decrypt_blob(blob, code)
-        if config is None:
-            qr_result_text.value = "❌ Wrong code or malformed blob — try again"
-            qr_result_text.color = ft.Colors.ERROR
-            page.update()
-            return
-
-        qr_result_text.value = "✅ Decrypted! Connecting…"
-        qr_result_text.color = ft.Colors.PRIMARY
-        page.update()
-        await asyncio.sleep(0.5)
-
-        _save_config(page, config["api_url"], config["secret_key"])
-
-    # ── QR scanner via FilePicker ───────────────────────────────────
-    scan_result_text = ft.Text("", size=12, text_align=ft.TextAlign.CENTER)
-    scanner_available = False
-    try:
-        from src.qr_scanner import is_available as _qr_avail, decode_qr_from_file as _qr_decode
-        scanner_available = _qr_avail()
-    except ImportError:
-        pass
-
-    if scanner_available:
-        file_picker = ft.FilePicker()
-        file_picker.on_result = lambda e: _on_pick_result(e, page, qr_blob_field, qr_code_field, scan_result_text)
-
-        # FilePicker must be added to overlay before use
-        try:
-            page.overlay.append(file_picker)
-            page.update()
-        except Exception:
-            pass
-
-        def _on_pick_result(e: ft.FilePickerResultEvent, page, blob_field, code_field, result_label):
-            """Callback when user picks an image from gallery."""
-            if not e.files:
-                return
-            path = e.files[0].path
-            if not path:
-                result_label.value = "❌ Could not access the selected file"
-                result_label.color = ft.Colors.ERROR
-                page.update()
-                return
-
-            decoded = _qr_decode(path)
-            if decoded is None:
-                result_label.value = "❌ No QR code found in the image — try a clearer screenshot"
-                result_label.color = ft.Colors.ERROR
-                page.update()
-                return
-
-            # Fill the blob field
-            blob_field.value = decoded
-            blob_field.update()
-            result_label.value = "✅ QR decoded! Now type the code and tap Decrypt & Connect"
-            result_label.color = ft.Colors.PRIMARY
-            page.update()
-
-        scan_btn = ft.ElevatedButton(
-            "📷 Scan QR from Image",
-            icon=ft.Icons.IMAGE_SEARCH,
-            on_click=lambda e: file_picker.pick_files(
-                allow_multiple=False,
-                allowed_extensions=["png", "jpg", "jpeg", "gif", "webp"],
-            ),
-            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
-        )
-    else:
-        scan_btn = ft.OutlinedButton(
-            "📷 Scan QR from Image",
-            icon=ft.Icons.IMAGE_SEARCH,
-            disabled=True,
-            tooltip="Install pyzbar + Pillow to enable QR scanning from images",
-            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
-        )
-
-    qr_tab = ft.Column(
-        [
-            ft.Text(
-                "Scan the QR code from the paird page using your camera, or paste the blob manually below.",
-                size=12,
-                color=ft.Colors.ON_SURFACE_VARIANT,
-            ),
-            scan_btn,
-            scan_result_text,
-            ft.Divider(height=1),
-            ft.Text("Or paste the blob + code manually:", size=11, color=ft.Colors.OUTLINE),
-            qr_blob_field,
-            ft.Row(
-                [qr_code_field, ft.ElevatedButton("Decrypt & Connect", on_click=_on_qr_decrypt)],
-                spacing=8,
-                vertical_alignment=ft.CrossAxisAlignment.END,
-            ),
-            qr_result_text,
-        ],
-        spacing=8,
-        tight=True,
-    )
-
-    # ── Tab switcher (simple button toggle, no ft.Tabs API) ───────
-    # Flet 0.85.3 Tabs requires 'content'+'length' constructor args
-    # and Tab uses 'label' not 'text' — so use a button toggle instead.
-    tab_index = {"value": active_tab}
-    manual_container = ft.Container(content=manual_tab, visible=active_tab == 0)
-    qr_container = ft.Container(content=qr_tab, visible=active_tab == 1)
-
-    def _switch_tab(idx):
-        tab_index["value"] = idx
-        manual_container.visible = idx == 0
-        qr_container.visible = idx == 1
-        manual_container.update()
-        qr_container.update()
-        manual_tab_btn.style = _tab_btn_style(True) if idx == 0 else _tab_btn_style(False)
-        qr_tab_btn.style = _tab_btn_style(True) if idx == 1 else _tab_btn_style(False)
-        manual_tab_btn.update()
-        qr_tab_btn.update()
-
-    def _tab_btn_style(active):
-        if active:
-            return ft.ButtonStyle(
-                bgcolor=ft.Colors.PRIMARY,
-                color=ft.Colors.ON_PRIMARY,
-                text_style=ft.TextStyle(size=13),
-            )
-        return ft.ButtonStyle(
-            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            color=ft.Colors.ON_SURFACE_VARIANT,
-            text_style=ft.TextStyle(size=13),
-        )
-
-    manual_tab_btn = ft.ElevatedButton(
-        "Manual", on_click=lambda e: _switch_tab(0), style=_tab_btn_style(active_tab == 0)
-    )
-    qr_tab_btn = ft.ElevatedButton(
-        "QR Code", on_click=lambda e: _switch_tab(1), style=_tab_btn_style(active_tab == 1)
-    )
-    tab_buttons = ft.Row(
-        [manual_tab_btn, qr_tab_btn], spacing=6, alignment=ft.MainAxisAlignment.CENTER
-    )
-    tab_content = ft.Column(
-        [tab_buttons, manual_container, qr_container],
-        spacing=10,
-        tight=True,
-    )
-
     dialog = ft.AlertDialog(
         title=ft.Text("Cadux Settings"),
-        content=tab_content,
+        content=ft.Column(
+            [name_field, url_field, key_field],
+            spacing=12,
+            tight=True,
+        ),
         actions=[
             ft.TextButton("Save", on_click=_on_save),
         ],
     )
-
     page.show_dialog(dialog)
 
 
