@@ -62,9 +62,18 @@ def build_deeplink(api_url: str, secret_key: str) -> str:
 async def connect_from_deeplink(page: ft.Page, config: dict) -> bool:
     """Create a profile from deep-link config and rebuild UI.
 
-    Shows a brief "Connecting…" dialog, saves the profile, and
+    Clears ALL existing profiles first so old QR configs don't linger.
+    Shows a brief "Connecting…" dialog, saves the new profile, and
     re-renders the main UI.
     """
+    from src.profiles import load_profiles, save_profiles
+
+    # Clear all old profiles — deep link always replaces everything
+    old_profiles = load_profiles(page)
+    if old_profiles:
+        save_profiles(page, [])
+        logger.info("Cleared %d old profile(s) for deep link setup", len(old_profiles))
+
     dialog = ft.AlertDialog(
         title=ft.Text("🔗 Connecting…"),
         content=ft.Column(

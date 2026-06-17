@@ -26,9 +26,40 @@ def main(page: ft.Page):
     page.theme = ft.Theme(color_scheme_seed="indigo")
     page.padding = 4
 
+    # ── Deep link from Android intent (cadux://connect?…) ──────────
+    # Must run BEFORE profile loading so QR code overrides stale data
+    deeplink_config = None
+    try:
+        initial_url = page.get_initial_url()
+    except Exception:
+        initial_url = None
+    if not initial_url:
+        try:
+            route = page.route
+            if route and "/cadux://" in route:
+                idx = route.index("cadux://")
+                initial_url = route[idx:]
+        except Exception:
+            pass
+    if initial_url:
+        logger.info("Deep link raw: %s", initial_url[:200])
+        from src.pairing import parse_deeplink
+        deeplink_config = parse_deeplink(initial_url)
+        if deeplink_config:
+            logger.info("Deep link parsed: url=%s", deeplink_config.get("api_url"))
+
     # ── Config: profiles first, then env/session fallback ───────────
     config = load_config(page)
     active_profile = get_active_profile(page)
+
+    # Deep link always wins — clear old profiles and create fresh
+    if deeplink_config:
+        from src.pairing import connect_from_deeplink
+        # Override config with deep link values
+        config = deeplink_config
+        page.session.store.set("_config", config)
+        page.run_task(connect_from_deeplink, page, deeplink_config)
+        return
 
     if active_profile is not None:
         # Profile takes priority over env/session config
@@ -41,33 +72,6 @@ def main(page: ft.Page):
         page.session.store.set("_active_profile", active_profile)
 
     page.session.store.set("_config", config)
-
-    # ── Deep link from Android intent (cadux://connect?…) ──────────
-    try:
-        initial_url = page.get_initial_url()
-    except Exception:
-        initial_url = None
-    # Fallback: Flet sometimes passes deep links as the route on Android
-    if not initial_url:
-        try:
-            route = page.route
-            if route and route.startswith("/cadux://"):
-                initial_url = route[1:]  # strip leading /
-            elif route and "cadux://" in route:
-                initial_url = route.split("cadux://", 1)[1]
-                if initial_url:
-                    initial_url = "cadux://" + initial_url
-        except Exception:
-            pass
-    if initial_url:
-        logger.info("Deep link: %s", initial_url[:100] if len(initial_url) > 100 else initial_url)
-    if initial_url and initial_url.startswith("cadux://"):
-        from src.pairing import parse_deeplink, connect_from_deeplink
-        deeplink_config = parse_deeplink(initial_url)
-        if deeplink_config:
-            if active_profile is None:
-                page.run_task(connect_from_deeplink, page, deeplink_config)
-                return
 
     # ── Refs ─────────────────────────────────────────────────────────
     status_dot = ft.Container(
