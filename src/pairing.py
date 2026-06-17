@@ -22,6 +22,43 @@ logger = logging.getLogger(__name__)
 _PAIRD_PORT = 8643
 _UDP_BROADCAST_MSG = b"CADUX_DISCOVER"
 
+# ── QR Decryption (matches paird/server.py _encrypt) ──────────────
+
+import base64
+import hashlib
+import json
+
+
+def decrypt_blob(blob: str, code: str) -> dict | None:
+    """Decrypt a config blob using the 4-char code.
+
+    Encryption scheme (from paird/server.py _encrypt):
+        key = sha256(code.encode())
+        encrypted = data[i] XOR key[i % 32]
+        blob  = base64(encrypted) + ":" + md5(original_data)
+
+    Returns {api_url, secret_key} or None on failure.
+    """
+    try:
+        if ":" in blob:
+            enc_part, expected_md5 = blob.rsplit(":", 1)
+        else:
+            enc_part, expected_md5 = blob, None
+
+        encrypted = base64.b64decode(enc_part)
+        key = hashlib.sha256(code.encode()).digest()
+        data = bytes(encrypted[i] ^ key[i % len(key)] for i in range(len(encrypted)))
+
+        if expected_md5 and hashlib.md5(data).hexdigest() != expected_md5:
+            return None
+
+        config = json.loads(data)
+        if config.get("api_url") and config.get("secret_key"):
+            return config
+    except Exception:
+        pass
+    return None
+
 
 # ── LAN IP Detection ────────────────────────────────────────────────
 
@@ -95,27 +132,24 @@ async def _probe_host(session: aiohttp.ClientSession, ip: str, port: int) -> dic
     return None
 
 
-async def _http_subnet_probe(subnet: str, port: int = _PAIRD_PORT, timeout: float = 4.0) -> dict | None:
-    """Probe IPs in a /24 subnet for paird.
+async def _http_subnet_probe(subnet: str, port: int = _PAIRD_PORT, timeout: float = 6.0) -> dict | None:
+    """Probe all IPs in a /24 subnet for paird.
 
-    Tries likely servers first (x.x.x.2-20), then the rest.
-    Scans quickly with asyncio.wait + short per-request timeout.
+    Probes 253 IPs concurrently (limited by the connector's 30 concurrent
+    connections). Returns as soon as one responds with ``cadux-paird``,
+    cancels the rest.
     """
     connector = aiohttp.TCPConnector(force_close=True, limit=30, limit_per_host=1)
     async with aiohttp.ClientSession(connector=connector) as session:
-        # Priority IPs: skip .0 (network), .1 (gateway), .255 (broadcast)
-        priority = [f"{subnet}.{i}" for i in range(2, 21)]
-        rest = [f"{subnet}.{i}" for i in range(21, 255)]
-
-        for ip_list in (priority, rest):
-            tasks = [_probe_host(session, ip, port) for ip in ip_list]
-            done, _ = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                result = task.result()
-                if result:
-                    return result
-            if done:
-                return None
+        ips = [f"{subnet}.{i}" for i in range(1, 255)]
+        tasks = [_probe_host(session, ip, port) for ip in ips]
+        done, pending = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            result = task.result()
+            if result:
+                for p in pending:
+                    p.cancel()
+                return result
     return None
 
 

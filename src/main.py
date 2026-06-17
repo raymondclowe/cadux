@@ -89,9 +89,9 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "🔍 Find Hermes",
-                                icon=ft.Icons.SEARCH,
-                                on_click=lambda e: page.run_task(_pairing_flow, page),
+                                "📷 Scan QR Code",
+                                icon=ft.Icons.QR_CODE_SCANNER,
+                                on_click=lambda e: _show_settings_dialog(page, active_tab=1),
                                 style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                             ),
                             ft.TextButton(
@@ -104,7 +104,7 @@ def main(page: ft.Page):
                         spacing=8,
                     ),
                     ft.Text(
-                        "Make sure Hermes is running paird on your network",
+                        "Have Hermes generate a QR code, then scan it here",
                         size=11,
                         color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
                     ),
@@ -471,11 +471,13 @@ async def _delete_current_profile(page: ft.Page):
 # ── Settings Dialog ──────────────────────────────────────────────────
 
 
-def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None):
+def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = None, active_tab: int = 1):
     """Show settings dialog.
 
     If *edit_profile* is given, the dialog pre-fills fields from that profile
     and updates it on save instead of creating a new one.
+
+    *active_tab*: 0 = Manual, 1 = QR Code (default).
     """
     # ── Tab 1: Manual entry ──────────────────────────────────────────
     profile_name = edit_profile.name if edit_profile else ""
@@ -647,9 +649,9 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
     # ── Tab switcher (simple button toggle, no ft.Tabs API) ───────
     # Flet 0.85.3 Tabs requires 'content'+'length' constructor args
     # and Tab uses 'label' not 'text' — so use a button toggle instead.
-    tab_index = {"value": 0}
-    manual_container = ft.Container(content=manual_tab, visible=True)
-    qr_container = ft.Container(content=qr_tab, visible=False)
+    tab_index = {"value": active_tab}
+    manual_container = ft.Container(content=manual_tab, visible=active_tab == 0)
+    qr_container = ft.Container(content=qr_tab, visible=active_tab == 1)
 
     def _switch_tab(idx):
         tab_index["value"] = idx
@@ -676,10 +678,10 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         )
 
     manual_tab_btn = ft.ElevatedButton(
-        "Manual", on_click=lambda e: _switch_tab(0), style=_tab_btn_style(True)
+        "Manual", on_click=lambda e: _switch_tab(0), style=_tab_btn_style(active_tab == 0)
     )
     qr_tab_btn = ft.ElevatedButton(
-        "QR Code", on_click=lambda e: _switch_tab(1), style=_tab_btn_style(False)
+        "QR Code", on_click=lambda e: _switch_tab(1), style=_tab_btn_style(active_tab == 1)
     )
     tab_buttons = ft.Row(
         [manual_tab_btn, qr_tab_btn], spacing=6, alignment=ft.MainAxisAlignment.CENTER
@@ -694,7 +696,6 @@ def _show_settings_dialog(page, existing_config=None, edit_profile: Profile = No
         title=ft.Text("Cadux Settings"),
         content=tab_content,
         actions=[
-            ft.TextButton("Find Server", on_click=lambda e: page.run_task(_pairing_flow, page)),
             ft.TextButton("Save", on_click=_on_save),
         ],
     )
@@ -740,26 +741,6 @@ def _save_config(page, api_url: str, secret_key: str, name: str = "Default", edi
         pass
     page.clean()
     main(page)
-
-
-# ── Pairing Flow ────────────────────────────────────────────────────
-
-
-async def _pairing_flow(page: ft.Page):
-    """Find paird on LAN and auto-connect — single tap flow."""
-    from src.pairing import discover_and_connect
-
-    await discover_and_connect(page)
-
-
-def _show_error_dialog(page: ft.Page, message: str):
-    dlg = ft.AlertDialog(
-        title=ft.Text("Pairing failed"),
-        content=ft.Text(message, size=14),
-        actions=[ft.TextButton("OK", on_click=lambda e: page.pop_dialog())],
-    )
-    page.show_dialog(dlg)
-    page.update()
 
 
 if __name__ == "__main__":

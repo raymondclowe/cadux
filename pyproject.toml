@@ -8,4 +8,7 @@ dependencies = [
     "flet>=0.85.3",
     "python-dotenv>=1.2.2",
     "aiohttp>=3.9.0",
+    "pyzbar>=0.1.9",
+    "pillow>=12.2.0",
+    "qrcode>=8.2",
 ]
