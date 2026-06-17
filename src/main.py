@@ -106,7 +106,7 @@ def main(page: ft.Page):
                     ft.Text(
                         "Make sure Hermes is running paird on your network",
                         size=11,
-                        color=ft.Colors.ON_ERROR_CONTAINER.with_opacity(0.7),
+                        color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
                     ),
                 ],
                 spacing=6,
