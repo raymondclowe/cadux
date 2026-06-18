@@ -27,24 +27,37 @@ def main(page: ft.Page):
     page.padding = 4
 
     # ── Deep link from Android intent (cadux://connect?…) ──────────
-    # Must run BEFORE profile loading so QR code overrides stale data
-    deeplink_config = None
+    # Store captured URL from on_route_change callback
+    _deep_link_url = {"value": None}
+
+    def _on_route_change(route):
+        if route and "cadux://" in str(route):
+            _deep_link_url["value"] = str(route)
+            logger.info("Route change deep link: %s", str(route)[:200])
+
+    page.on_route_change = _on_route_change
+
+    # Also try get_initial_url / page.route
     try:
-        initial_url = page.get_initial_url()
+        url = page.get_initial_url()
+        if url and "cadux://" in str(url):
+            _deep_link_url["value"] = str(url)
     except Exception:
-        initial_url = None
-    if not initial_url:
+        pass
+    if not _deep_link_url["value"]:
         try:
-            route = page.route
-            if route and "/cadux://" in route:
-                idx = route.index("cadux://")
-                initial_url = route[idx:]
+            r = page.route
+            if r and "cadux://" in str(r):
+                _deep_link_url["value"] = str(r)
         except Exception:
             pass
-    if initial_url:
-        logger.info("Deep link raw: %s", initial_url[:200])
+
+    deeplink_config = None
+    if _deep_link_url["value"]:
+        raw = _deep_link_url["value"]
+        logger.info("Deep link raw: %s", raw[:200])
         from src.pairing import parse_deeplink
-        deeplink_config = parse_deeplink(initial_url)
+        deeplink_config = parse_deeplink(raw)
         if deeplink_config:
             logger.info("Deep link parsed: url=%s", deeplink_config.get("api_url"))
 
