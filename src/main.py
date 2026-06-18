@@ -27,30 +27,24 @@ def main(page: ft.Page):
     page.padding = 4
 
     # ── Deep link from Android intent (cadux://connect?…) ──────────
-    # Store captured URL from on_route_change callback
+    # DIAGNOSTIC: capture everything Flet gives us about the deep link
     _deep_link_url = {"value": None}
+    _route_log = {"route": None, "on_change": None}
 
     def _on_route_change(route):
-        if route and "cadux://" in str(route):
+        _route_log["on_change"] = str(route) if route else "EMPTY"
+        if route and "cadux" in str(route).lower():
             _deep_link_url["value"] = str(route)
-            logger.info("Route change deep link: %s", str(route)[:200])
 
     page.on_route_change = _on_route_change
 
-    # Also try get_initial_url / page.route
+    # Capture page.route
     try:
-        url = page.get_initial_url()
-        if url and "cadux://" in str(url):
-            _deep_link_url["value"] = str(url)
+        _route_log["route"] = str(page.route) if page.route else "EMPTY"
+        if page.route and "cadux" in str(page.route).lower():
+            _deep_link_url["value"] = str(page.route)
     except Exception:
         pass
-    if not _deep_link_url["value"]:
-        try:
-            r = page.route
-            if r and "cadux://" in str(r):
-                _deep_link_url["value"] = str(r)
-        except Exception:
-            pass
 
     deeplink_config = None
     if _deep_link_url["value"]:
@@ -151,6 +145,11 @@ def main(page: ft.Page):
                         "Have Hermes show a QR code, then scan it with your phone camera — not inside Cadux",
                         size=11,
                         color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
+                    ),
+                    ft.Text(
+                        f"DEBUG: route={_route_log.get('route','?')} on_change={_route_log.get('on_change','?')}",
+                        size=9,
+                        color=ft.Colors.OUTLINE,
                     ),
                 ],
                 spacing=6,
