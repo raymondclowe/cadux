@@ -342,6 +342,13 @@ def main(page: ft.Page):
                             on_click=lambda e: page.run_task(reconnect_fn()),
                             style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
                         ),
+                        ft.Divider(height=1),
+                        ft.TextButton(
+                            "About Cadux",
+                            icon=ft.Icons.INFO_OUTLINE,
+                            on_click=lambda e: _show_about_dialog(page),
+                            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                        ),
                     ],
                     spacing=8,
                     scroll=ft.ScrollMode.AUTO,
@@ -627,6 +634,24 @@ async def _pairing_flow(page: ft.Page):
             page.pop_dialog(),
             _show_settings_dialog(page),
         ) or None)],
+    )
+    page.show_dialog(dlg)
+    page.update()
+
+
+def _show_about_dialog(page: ft.Page):
+    dlg = ft.AlertDialog(
+        title=ft.Row([ft.Icon(ft.Icons.FORUM, size=24), ft.Text("Cadux", size=20, weight=ft.FontWeight.BOLD)]),
+        content=ft.Column([
+            ft.Text("The legendary winged staff of Hermes.", size=14, italic=True),
+            ft.Container(height=8),
+            ft.Text("v0.3.0", size=16, weight=ft.FontWeight.BOLD),
+            ft.Text("Hermes Agent client for Android + desktop.", size=13),
+            ft.Container(height=8),
+            ft.Text("Built with Flet + Python", size=12, color=ft.Colors.OUTLINE),
+            ft.Text("github.com/raymondclowe/cadux", size=12, color=ft.Colors.PRIMARY),
+        ], spacing=4, tight=True, width=300),
+        actions=[ft.TextButton("OK", on_click=lambda e: page.pop_dialog())],
     )
     page.show_dialog(dlg)
     page.update()

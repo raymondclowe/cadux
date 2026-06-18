@@ -196,7 +196,13 @@ async def send_message(
         logger.warning("no http session")
         return
 
-    payload = {"message": text}
+    payload = {
+        "message": text,
+        "metadata": {
+            "source": "cadux",
+            "version": "0.3.0",
+        }
+    }
 
     try:
         async with http.post(
