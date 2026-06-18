@@ -25,25 +25,27 @@ logger = logging.getLogger(__name__)
 
 
 def parse_deeplink(url: str) -> dict | None:
-    """Parse a ``cadux://`` deep link URL.
+    """Parse a Cadux deep link URL or Flet route.
 
-    Expected format::
+    Handles two formats:
+        ``cadux://connect?url=<api_url>&key=<secret_key>`` (original)
+        ``/?url=<api_url>&key=<secret_key>`` (Flet strips scheme/host)
 
-        cadux://connect?url=<api_url>&key=<secret_key>
-
-    Both values are URL-encoded. Returns ``{api_url, secret_key}``
-    or ``None`` if the URL is invalid.
+    Returns ``{api_url, secret_key}`` or ``None`` if invalid.
     """
-    if not url or not url.startswith("cadux://"):
+    if not url:
         return None
 
     try:
-        parsed = urllib.parse.urlparse(url)
+        # Flet strips cadux://connect and delivers as route /?url=...&key=...
+        # Strip leading / if present
+        cleaned = url.lstrip("/")
+        parsed = urllib.parse.urlparse(cleaned)
         params = urllib.parse.parse_qs(parsed.query)
         api_url = params.get("url", [None])[0]
         secret_key = params.get("key", [None])[0]
         if api_url and secret_key:
-            return {"api_url": api_url, "secret_key": secret_key}
+            return {"api_url": urllib.parse.unquote(api_url), "secret_key": secret_key}
     except Exception:
         pass
     return None

@@ -33,7 +33,7 @@ def main(page: ft.Page):
 
     def _on_route_change(route):
         _route_log["on_change"] = str(route) if route else "EMPTY"
-        if route and "cadux" in str(route).lower():
+        if route and ("url=" in str(route) or "cadux" in str(route).lower()):
             _deep_link_url["value"] = str(route)
 
     page.on_route_change = _on_route_change
@@ -41,8 +41,9 @@ def main(page: ft.Page):
     # Capture page.route
     try:
         _route_log["route"] = str(page.route) if page.route else "EMPTY"
-        if page.route and "cadux" in str(page.route).lower():
-            _deep_link_url["value"] = str(page.route)
+        r = str(page.route) if page.route else ""
+        if r and ("url=" in r or "cadux" in r.lower()):
+            _deep_link_url["value"] = r
     except Exception:
         pass
 
