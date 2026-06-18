@@ -62,12 +62,23 @@ def main(page: ft.Page):
 
     # Deep link always wins — clear old profiles and create fresh
     if deeplink_config:
-        from src.pairing import connect_from_deeplink
-        # Override config with deep link values
+        from src.pairing import create_profile, set_active_profile_id
+        from src.profiles import load_profiles, save_profiles
+        # Clear old profiles and create new one — sync, before UI builds
+        old = load_profiles(page)
+        if old:
+            save_profiles(page, [])
+        profile = create_profile(
+            page,
+            name=f"Hermes ({deeplink_config['api_url']})",
+            api_url=deeplink_config["api_url"],
+            secret_key=deeplink_config["secret_key"],
+        )
+        set_active_profile_id(page, profile.id)
         config = deeplink_config
         page.session.store.set("_config", config)
-        page.run_task(connect_from_deeplink, page, deeplink_config)
-        return
+        active_profile = profile
+        page.session.store.set("_active_profile", active_profile)
 
     if active_profile is not None:
         # Profile takes priority over env/session config

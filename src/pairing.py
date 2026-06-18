@@ -95,13 +95,12 @@ async def connect_from_deeplink(page: ft.Page, config: dict) -> bool:
     )
     set_active_profile_id(page, profile.id)
 
+    # Pop dialog and let the main() flow handle connection
     try:
         page.pop_dialog()
     except Exception:
         pass
-    page.clean()
-    from src.main import main
-    main(page)
+    page.update()
     return True
 
 
