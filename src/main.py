@@ -344,6 +344,12 @@ def main(page: ft.Page):
                         ),
                         ft.Divider(height=1),
                         ft.TextButton(
+                            "Cadux Settings",
+                            icon=ft.Icons.TUNE,
+                            on_click=lambda e: chat_ui._show_cadux_settings_dialog(page),
+                            style=ft.ButtonStyle(text_style=ft.TextStyle(size=12)),
+                        ),
+                        ft.TextButton(
                             "About Cadux",
                             icon=ft.Icons.INFO_OUTLINE,
                             on_click=lambda e: _show_about_dialog(page),

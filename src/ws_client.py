@@ -203,6 +203,12 @@ async def send_message(
             "version": "0.3.0",
         }
     }
+    # Attach Cadux metadata (GPS, TTS, etc.)
+    try:
+        from src.chat_ui import build_message_metadata
+        payload["metadata"].update(build_message_metadata())
+    except Exception:
+        pass
 
     try:
         async with http.post(
