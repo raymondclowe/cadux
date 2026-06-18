@@ -27,20 +27,17 @@ def main(page: ft.Page):
     page.padding = 4
 
     # ── Deep link from Android intent (cadux://connect?…) ──────────
-    # DIAGNOSTIC: capture everything Flet gives us about the deep link
+    # Flet strips cadux://connect and delivers route as /?url=...&key=...
     _deep_link_url = {"value": None}
-    _route_log = {"route": None, "on_change": None}
 
     def _on_route_change(route):
-        _route_log["on_change"] = str(route) if route else "EMPTY"
         if route and ("url=" in str(route) or "cadux" in str(route).lower()):
             _deep_link_url["value"] = str(route)
 
     page.on_route_change = _on_route_change
 
-    # Capture page.route
+    # Also check page.route at startup
     try:
-        _route_log["route"] = str(page.route) if page.route else "EMPTY"
         r = str(page.route) if page.route else ""
         if r and ("url=" in r or "cadux" in r.lower()):
             _deep_link_url["value"] = r
@@ -157,19 +154,6 @@ def main(page: ft.Page):
                         "Have Hermes show a QR code, then scan it with your phone camera — not inside Cadux",
                         size=11,
                         color=ft.Colors.with_opacity(0.7, ft.Colors.ON_ERROR_CONTAINER),
-                    ),
-                    ft.Container(height=4),
-                    ft.Text(
-                        f"ROUTE: {_route_log.get('route','EMPTY')}",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.RED,
-                    ),
-                    ft.Text(
-                        f"ON_CHANGE: {_route_log.get('on_change','EMPTY')}",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.RED,
                     ),
                 ],
                 spacing=6,
