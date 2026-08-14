@@ -200,7 +200,7 @@ async def send_message(
         "message": text,
         "metadata": {
             "source": "cadux",
-            "version": "0.3.0",
+            "version": "0.4.0",
         }
     }
     # Attach Cadux metadata (GPS, TTS, etc.)

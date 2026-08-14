@@ -147,7 +147,7 @@ def set_tts_enabled(enabled):
 
 def build_message_metadata(extra=None):
     """Build metadata dict to attach to outgoing messages."""
-    meta = {"source": "cadux", "version": "0.3.0"}
+    meta = {"source": "cadux", "version": "0.4.0"}
     if _tts_enabled["value"]:
         meta["tts"] = True
     if _gps_mode["value"] != "none":

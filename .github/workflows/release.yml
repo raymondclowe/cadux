@@ -29,7 +29,25 @@ jobs:
         run: uv sync
 
       - name: Build APK
-        run: uv run flet build apk
+        run: |
+          # Watcher ensures the cadux:// intent filter lands in the manifest
+          # (flet 0.85.3 --deep-linking-scheme is unreliable on clean builds).
+          uv run python tools/patch_manifest.py &
+          WATCHER_PID=$!
+          uv run flet build apk --project cadux --org com.cadux \
+            --deep-linking-scheme cadux --deep-linking-host connect --yes
+          BUILD_RC=$?
+          kill $WATCHER_PID 2>/dev/null || true
+          wait $WATCHER_PID 2>/dev/null || true
+          exit $BUILD_RC
+
+      - name: Verify deep-link intent filter
+        run: |
+          if ! grep -q 'android:scheme="cadux"' build/flutter/android/app/src/main/AndroidManifest.xml; then
+            echo "::error::cadux:// intent filter missing from AndroidManifest.xml"
+            exit 1
+          fi
+          echo "cadux:// intent filter present"
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

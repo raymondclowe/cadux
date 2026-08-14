@@ -651,7 +651,7 @@ def _show_about_dialog(page: ft.Page):
         content=ft.Column([
             ft.Text("The legendary winged staff of Hermes.", size=14, italic=True),
             ft.Container(height=8),
-            ft.Text("v0.3.0", size=16, weight=ft.FontWeight.BOLD),
+            ft.Text("v0.4.0", size=16, weight=ft.FontWeight.BOLD),
             ft.Text("Hermes Agent client for Android + desktop.", size=13),
             ft.Container(height=8),
             ft.Text("Built with Flet + Python", size=12, color=ft.Colors.OUTLINE),
